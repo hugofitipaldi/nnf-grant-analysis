@@ -1,0 +1,26 @@
+{
+    "id": "FC99B3D6",
+    "path": "~/Documents/Projects/nnf-grant-analysis/app.R",
+    "project_path": "app.R",
+    "type": "r_source",
+    "hash": "0",
+    "contents": "",
+    "dirty": false,
+    "created": 1777902573496.0,
+    "source_on_save": false,
+    "relative_order": 1,
+    "properties": {
+        "source_window_id": "",
+        "Source": "Source",
+        "cursorPosition": "797,43",
+        "scrollLine": "788"
+    },
+    "folds": "",
+    "lastKnownWriteTime": 1777902828,
+    "encoding": "UTF-8",
+    "collab_server": "",
+    "source_window": "",
+    "last_content_update": 1777902828288,
+    "read_only": false,
+    "read_only_alternatives": []
+}
