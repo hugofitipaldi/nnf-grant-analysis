@@ -1,0 +1,2608 @@
+---
+title: "TRL000411 — *A. oryzae* IVP Nursery Study"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 4
+    theme: flatly
+    highlight: tango
+    code_folding: hide
+params:
+  show_code: FALSE
+---
+
+```{r setup, eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE, results='hide'}
+knitr::include_graphics("/z/datasets/ds_ahn_invivo/novonesis_logo.png")
+knitr::opts_chunk$set(echo = params$show_code, dev = "CairoPNG")
+Sys.setlocale("LC_ALL", "en_US.UTF-8")
+options(bitmapType = "cairo")
+```
+
+The objective of this report is to provide summaries and treatment group
+comparisons of the pen-level and individual data for TRL000411, an *A.
+oryzae* fermentation product IVP nursery study conducted at GBI in Fergus
+Falls, MN.
+
+<br>
+
+The experimental design consisted of 4 treatment groups. One strict
+negative control group received no F18 challenge and was housed
+separately for biosecurity reasons. The remaining three groups received
+an F18 E. coli challenge: the positive control, the low-dose IVP group
+(1BP, BP-L), and the high-dose IVP group (2BP, BP-SL). The main
+comparison of interest is to assess whether the IVP treatments reduce
+the negative impact of the F18 challenge on clinical outcomes and
+performance relative to the challenged positive control. No statistical
+comparisons were made between the two IVP treatment groups.
+
+```{r libraries, message=FALSE, warning=FALSE, results='hide'}
+library(ggpubr)
+library(kableExtra)
+library(ggplot2)
+library(forcats)
+library(rstatix)
+library(lme4)
+library(multcomp)
+library(data.table)
+library(cowplot)
+library(sjPlot)
+library(emmeans)
+library(sjstats)
+library(gt)
+library(viridis)
+library(scales)
+library(RColorBrewer)
+library(gganimate)
+library(stringr)
+library(tidyr)
+library(nzdl)
+library(purrr)
+library(readxl)
+library(openxlsx)
+library(ordinal)
+library(brms)
+library(DBI)
+library(drc)
+library(MuMIn)
+library(dplyr)
+library(DT)
+library(here)
+library(pracma)
+library(lubridate)
+library(multcomp)
+library(multcompView)
+library(car)
+library(plotly)
+
+source("R/load_theme_from_source.R")
+
+options(bitmapType = "cairo")
+eval_per_code  <- TRUE
+eval_ind_code  <- TRUE
+```
+
+<br>
+
+# Metrics and statistical approaches
+
+The performance metrics below are calculated at the pen level from raw
+feed intake, body weight, and removal data collected throughout the
+trial. Each metric is computed for both individual weekly periods and
+cumulative combined periods to capture both acute responses to the
+challenge and overall recovery patterns.
+
+<br>
+
+```{r metric-formulas, results='asis', echo=FALSE}
+cat('
+\\begingroup
+\\small
+### 1. Body Weight Gain (BWG)
+\\[
+BWG = \\frac{\\text{Pen weight period end}}{\\text{Number of animals period end}} - \\frac{\\text{Pen weight period start}}{\\text{Number of animals period start}}
+\\]
+
+### 2. Feed Conversion Ratio (FCR)
+\\[
+FCR = \\frac{\\text{Total feed consumed in a period}}{\\left(\\text{Total pen weight at the end of the period} + \\text{Weight of the removed animals}\\right) - \\text{Total pen weight at the start of the period}}
+\\]
+
+Note: FCR may be negative or very large (or infinite) when BWG is zero or
+negative. In a challenge model this can occur legitimately during the acute
+phase when pigs lose weight. **Negative FCR values are retained and reported**
+because they reflect the biological reality of the challenge response; they
+are explained in context rather than suppressed. The Gain:Feed ratio (GF,
+see below) is provided alongside FCR as a complementary metric that remains
+interpretable under negative gain.
+
+### 3. Gain:Feed Ratio (GF)
+\\[
+GF = \\frac{\\left(\\text{Total pen weight at the end of the period} + \\text{Weight of the removed animals}\\right) - \\text{Total pen weight at the start of the period}}{\\text{Total feed consumed in a period}}
+\\]
+
+Unlike FCR, GF remains interpretable when pigs lose weight: a negative GF
+indicates net weight loss per unit of feed consumed, which is a biologically
+meaningful outcome in a challenge model.
+
+### 4. Feed Intake
+\\[
+\\text{Feed intake} = \\text{Total feed consumed in a period (raw value)}
+\\]
+
+### 5. Average Daily Feed Intake (ADFI)
+\\[
+ADFI = \\frac{\\text{Total feed consumed in a period}}{\\left(\\text{Number of animals period end} \\times \\text{Total number of days in the period}\\right) + \\left(\\text{Sum of days each removed animal spent in the period}\\right)}
+\\]
+
+### 6. Average Daily Gain (ADG) — Pen Level
+\\[
+ADG = \\frac{\\left(\\text{Total pen weight period end} + \\text{Weight of the removed animals}\\right) - \\text{Total pen weight period start}}{\\left(\\text{Number of animals period end} \\times \\text{Total number of days in the period}\\right) + \\left(\\text{Sum of days each removed animal spent in the period}\\right)}
+\\]
+
+### 7. Average Daily Gain (ADG) — Individual Level
+\\[
+ADG = \\frac{\\text{Individual weight period end} - \\text{Individual weight period start}}{\\text{Total number of days in the period}}
+\\]
+\\endgroup
+')
+```
+
+<br>
+
+# Statistical model formulation
+
+<br>
+
+## Pen-level performance variables
+
+The pen-level model includes treatment as a fixed effect, starting body
+weight as a covariate to account for initial weight differences between
+pens, and random effects for weight block and room to control for
+systematic variation in the experimental design.
+
+```{r pen-model-eq, results='asis'}
+cat("
+$$
+y_{ijkl} = \\beta_0 + \\text{treatment}_{k} + \\beta_1 \\cdot \\text{start weight}_{ijkl} + u_{j} + v_{l} + \\epsilon_{ijkl}
+$$
+
+- \\( y_{ijkl} \\): The value for the \\( i \\)-th pen in the \\( k \\)-th treatment group within the \\( j \\)-th block and the \\( l \\)-th room.
+- \\( \\beta_0 \\): The fixed intercept, representing the overall mean response.
+- \\( \\text{treatment}_{k} \\): The fixed effect of the \\( k \\)-th treatment group, \\( k = [\\text{F18-ETEC (PC), No Chall (NC), 1BP (BP-L), 2BP (BP-SL)}] \\).
+- \\( \\beta_1 \\): The fixed effect coefficient for \\( \\text{start weight} \\), a covariate adjusting for differences in initial weights.
+- \\( u_{j} \\): The random effect associated with the \\( j \\)-th weight block, \\( j = [1,\\ldots,4] \\).
+- \\( v_{l} \\): The random effect associated with the \\( l \\)-th room.
+- \\( \\epsilon_{ijkl} \\): The random residual.
+")
+```
+
+<br>
+
+## Individual body weight
+
+The individual body weight model extends the pen-level model by adding
+animal nested within pen as a random effect, and sex as an additional
+random effect. The treatment × day interaction captures how treatment
+differences evolve over the course of the trial.
+
+```{r ind-bw-model-eq, results='asis'}
+cat("
+$$
+y_{ijklm} = \\beta_0 + \\text{treatment}_{k} + \\beta_1 \\cdot \\text{start weight}_{ijklm} + u_{j} + w_{ij} + s_{m} + v_{l} + \\epsilon_{ijklm}
+$$
+
+- \\( u_{j} \\): Random effect of the \\( j \\)-th weight block.
+- \\( w_{ij} \\): Random effect of the \\( i \\)-th pen nested within the \\( j \\)-th block.
+- \\( s_{m} \\): Random effect of the \\( m \\)-th sex.
+- \\( v_{l} \\): Random effect of the \\( l \\)-th room.
+")
+```
+
+<br>
+
+## Pen-level CV (calculated from individual body weight)
+
+```{r cv-model-eq, results='asis'}
+cat("
+$$
+y_{ij} = \\beta_0 + \\text{treatment}_{k} + \\beta_1 \\cdot \\text{n animal}_{ij} + u_{j} + \\epsilon_{ij}
+$$
+")
+```
+
+<br>
+
+## Categorical variables (fecal score, demeanor and abdominal score)
+
+```{r cat-model-eq, results='asis'}
+cat("
+$$
+y_{ijkl} = \\beta_0 + \\text{treatment}_k + \\beta_1 \\cdot \\text{day of trial}_{l} +
+\\beta_2 (\\text{treatment}_k \\cdot \\text{day of trial}_{l}) + u_j + v_{j(i)} + w_m + \\epsilon_{ijkl}
+$$
+")
+```
+
+<br>
+
+## Statistical notation
+
+**Letters indicate significant differences (P < 0.05) between treatment
+groups based on Dunnett's test, contrasting IVP treatments against the
+F18-ETEC (PC) group. Groups sharing the same letter are not
+significantly different from F18-ETEC (PC). No contrasts are made
+between the IVP groups.**
+
+**† indicates a tendency (0.05 < P < 0.1) between treatment groups.**
+
+\*\*\* P < 0.001 | \*\* P < 0.01 | \* P < 0.05 | † P < 0.10
+
+<br>
+
+---
+
+# Raw feed, weight and count data
+
+```{r data-load, message=FALSE, warning=FALSE, eval=TRUE}
+file     <- "raw_data/trial_template_TRL000411_03212026_correctedperiods.xlsx"
+trial_id <- "TRL_000411"
+
+## ---- helper functions ----
+
+load_excel_data <- function(file, sheet) {
+  as.data.frame(readxl::read_excel(file, sheet = sheet))
+}
+
+find_and_replace_outliers <- function(data, outlier_cols) {
+  data %>%
+    mutate(across(all_of(outlier_cols), ~ ifelse(is_outlier(.), NA, .))) %>%
+    ungroup()
+}
+
+datatable_func <- function(table) {
+  datatable(
+    table,
+    options = list(
+      scrollY  = 400, scrollX = TRUE,
+      autoWidth = TRUE, paging = FALSE,
+      dom = "t", ordering = FALSE
+    ),
+    rownames = FALSE, style = "bootstrap5",
+    extensions = "Buttons"
+  ) %>%
+    formatStyle(columns = names(table), textAlign = "center")
+}
+
+txt_s <- 16
+ts <- theme(
+  axis.text.y  = element_text(angle = 0, size = txt_s),
+  axis.title.y = element_text(size = txt_s),
+  axis.title.x = element_text(size = txt_s),
+  legend.text  = element_text(size = 12),
+  title      = element_text(size = txt_s)
+)
+
+treatment_map <- c(
+  "1-RED"   = "No Chall (NC)",
+  "2-RED"   = "F18-ETEC (PC)",
+  "3-BLUE"  = "1BP (BP-L)",
+  "4-YELLOW" = "2BP (BP-SL)"
+)
+
+## ---- load sheets ----
+
+treatment_group_metadata <- load_excel_data(file, "treatment_group_metadata") %>%
+  arrange(pen) %>%
+  mutate(
+    template_ID      = trial_id,
+    treatment_full_name = dplyr::recode(treatment_full_name, !!!treatment_map),
+    treatment_full_name = factor(
+      treatment_full_name,
+      levels = c("F18-ETEC (PC)", "No Chall (NC)", "1BP (BP-L)", "2BP (BP-SL)")
+    )
+  )
+
+trial_dates <- load_excel_data(file, "trial_dates") %>%
+  mutate(date_of_measure = lubridate::ymd(date_of_measure), template_ID = trial_id)
+
+feed_intake_exp_unit <- load_excel_data(file, "feed_intake_exp_unit") %>%
+  mutate(date_of_measure = lubridate::ymd(date_of_measure), template_ID = trial_id)
+
+body_weight_exp_unit <- load_excel_data(file, "body_weight_exp_unit") %>%
+  mutate(date_of_measure = lubridate::ymd(date_of_measure), template_ID = trial_id)
+
+animal_removals <- load_excel_data(file, "animal_removals") %>%
+  mutate(date_of_measure = lubridate::ymd(date_of_measure), template_ID = trial_id)
+
+## ---- joins ----
+
+feed_intake_exp_unit <- feed_intake_exp_unit %>%
+  left_join(select(trial_dates, date_of_measure, trial_period, day_of_trial),
+            by = c("date_of_measure", "trial_period")) %>%
+  left_join(select(treatment_group_metadata, pen, weight_block, room, treatment_full_name),
+            by = "pen") %>%
+  select(treatment_full_name, pen, weight_block, room,
+         date_of_measure, day_of_trial, trial_period,
+         days_on_feed, n_animal, pen_feed_intake)
+
+body_weight_exp_unit <- body_weight_exp_unit %>%
+  left_join(select(trial_dates, date_of_measure, trial_period, day_of_trial),
+            by = c("date_of_measure", "trial_period")) %>%
+  left_join(select(treatment_group_metadata, pen, weight_block, room, treatment_full_name),
+            by = "pen") %>%
+  select(treatment_full_name, pen, weight_block, room,
+         date_of_measure, day_of_trial, trial_period,
+         n_animal, pen_bodyweight)
+
+feed_bw <- left_join(body_weight_exp_unit, feed_intake_exp_unit,
+                     by = c("pen", "day_of_trial")) %>%
+  select(treatment_full_name.x, pen, weight_block.x, room.x,
+         date_of_measure.x, day_of_trial, trial_period.x,
+         n_animal.x, pen_bodyweight, days_on_feed, pen_feed_intake) %>%
+  rename(treatment_full_name = treatment_full_name.x,
+         weight_block = weight_block.x,
+         room = room.x,
+         date_of_measure = date_of_measure.x,
+         n_animal = n_animal.x,
+         trial_period = trial_period.x) %>%
+  filter(!is.na(pen_bodyweight)) %>%
+  group_by(pen) %>%
+  filter(n() >= 6) %>%
+  ungroup()
+
+animal_removals <- animal_removals %>%
+  left_join(select(trial_dates, date_of_measure, day_of_trial, trial_period),
+            by = "date_of_measure") %>%
+  left_join(select(treatment_group_metadata, pen, weight_block, room, treatment_full_name),
+            by = "pen") %>%
+  select(treatment_full_name, pen, weight_block, room,
+         date_of_measure, day_of_trial, trial_period,
+         animal_id, mortality_cull_removal, reason, body_weight)
+
+## ---- sanity check: removals on days not in schedule ----
+removals_off_schedule <- animal_removals %>%
+  filter(!day_of_trial %in% trial_dates$day_of_trial) %>%
+  select(pen, animal_id, day_of_trial, mortality_cull_removal, reason)
+
+if (nrow(removals_off_schedule) > 0) {
+  message("WARNING: ", nrow(removals_off_schedule),
+          " removals fall on days not in trial_dates")
+  datatable_func(removals_off_schedule)
+} else {
+  message("All removal days match trial_dates schedule")
+}
+
+feed_bw <- feed_bw %>%
+  left_join(
+    animal_removals %>%
+      group_by(pen, trial_period) %>%
+      summarise(
+        removal_weight = sum(body_weight, na.rm = TRUE),
+        n_removals   = n(),
+        n_mortality  = sum(mortality_cull_removal == "mortality", na.rm = TRUE),
+        .groups    = "drop"
+      ),
+    by = c("pen", "trial_period")
+  ) %>%
+  mutate(
+    removal_weight = ifelse(day_of_trial == 0, NA, removal_weight),
+    n_removals   = ifelse(day_of_trial == 0, NA, n_removals),
+    n_mortality  = ifelse(day_of_trial == 0, NA, n_mortality),
+    n_mortality  = ifelse(n_mortality == 0, NA, n_mortality)
+  ) %>%
+  as.data.frame()
+
+## ---- animal count integrity check ----
+
+feed_selection <- feed_bw %>%
+  filter(day_of_trial != 36) %>%
+  select(pen, day_of_trial, trial_period, n_animal) %>%
+  mutate(
+    trial_period = ifelse(
+      day_of_trial != 0,
+      paste0("p", as.numeric(gsub("p", "", trial_period)) + 1),
+      trial_period
+    ),
+    n_animal_prev = n_animal
+  ) %>%
+  select(pen, trial_period, n_animal_prev)
+
+feed_bw_removal_check <- feed_bw %>%
+  left_join(feed_selection, by = c("trial_period", "pen")) %>%
+  mutate(
+    n_removals   = ifelse(is.na(n_removals), 0, n_removals),
+    issue_flag   = (n_animal + n_removals) == n_animal_prev,
+    higher_or_less = case_when(
+      n_animal_prev > n_animal ~ "higher",
+      n_animal_prev < n_animal ~ "lower",
+      TRUE           ~ "equal"
+    )
+  )
+
+pen_problem_removals <- feed_bw_removal_check %>%
+  filter(issue_flag == FALSE) %>%
+  arrange(pen) %>%
+  select(treatment_full_name, pen, day_of_trial, trial_period,
+         n_animal, n_removals, n_animal_prev)
+
+if (nrow(pen_problem_removals) > 0) {
+  message("WARNING: ", nrow(pen_problem_removals),
+          " pen-period combinations have animal count discrepancies")
+  datatable_func(pen_problem_removals)
+} else {
+  message("Animal count checks passed for all pens and periods")
+}
+```
+
+<br>
+
+## Calculated performance metrics
+
+```{r perf-calc, message=FALSE, warning=FALSE, eval=TRUE}
+periods <- data.frame(
+  trial_period = c(
+    "0_8", "8_15", "15_22", "22_29", "29_36",
+    "0_15", "0_22", "0_29", "0_36",
+    "8_22", "8_29", "8_36"
+  ),
+  first_period = c(
+    0, 8, 15, 22, 29,
+    0, 0, 0, 0,
+    8, 8, 8
+  ),
+  second_period = c(
+    8, 15, 22, 29, 36,
+    15, 22, 29, 36,
+    22, 29, 36
+  ),
+  trial_period_label = c(
+    "Day 0-8", "Day 8-15", "Day 15-22", "Day 22-29", "Day 29-36",
+    "Day 0-15", "Day 0-22", "Day 0-29", "Day 0-36",
+    "Day 8-22", "Day 8-29", "Day 8-36"
+  ),
+  stringsAsFactors = FALSE
+)
+
+trial_period_labs <- periods$trial_period_label
+trial_col_labs  <- periods$trial_period
+
+feed_bw <- feed_bw %>%
+  group_by(pen, day_of_trial) %>%
+  mutate(bw_av = pen_bodyweight / n_animal) %>%
+  ungroup() %>%
+  left_join(periods, by = "trial_period") %>%
+  mutate(first_period = as.numeric(first_period),
+         second_period = as.numeric(second_period)) %>%
+  as.data.frame()
+
+pens_df <- unique(feed_bw[, c("treatment_full_name", "pen", "weight_block", "room")])
+per_dat <- tidyr::crossing(pens_df, periods) %>%
+  mutate(
+    fi = NA, bwg = NA, fcr = NA, gf = NA,
+    adfi = NA, adg = NA,
+    days_on_feed = NA, raw_fi = NA,
+    bw_first_period = NA, bw_second_period = NA, removal_weight = NA
+  )
+
+per_dat$first_period  <- as.numeric(per_dat$first_period)
+per_dat$second_period <- as.numeric(per_dat$second_period)
+
+## ---- main performance loop ----
+for (i in 1:nrow(per_dat)) {
+
+  first_row <- match(
+    paste(per_dat$pen[i], per_dat$first_period[i]),
+    paste(feed_bw$pen, feed_bw$day_of_trial)
+  )
+  second_row <- match(
+    paste(per_dat$pen[i], per_dat$second_period[i]),
+    paste(feed_bw$pen, feed_bw$day_of_trial)
+  )
+
+  days   <- seq(feed_bw[first_row, "day_of_trial"],
+                feed_bw[second_row, "day_of_trial"], 1)
+  f_days  <- length(days) - 1
+
+  animal_removals_day <- animal_removals[
+    which(animal_removals$pen %in% feed_bw[first_row, "pen"] &
+            animal_removals$day_of_trial %in% days), ]
+
+  if (nrow(animal_removals_day) == 0) {
+    days_on_feed <- feed_bw[second_row, "n_animal"] * f_days
+  } else {
+    p_days_on_feed <- feed_bw[second_row, "n_animal"] * f_days
+    add_days <- vapply(seq_len(nrow(animal_removals_day)), function(j) {
+      which(days %in% animal_removals_day[j, "day_of_trial"]) - 1
+    }, numeric(1))
+    days_on_feed <- sum(p_days_on_feed, sum(add_days))
+  }
+
+  per_dat$days_on_feed[i]   <- as.numeric(days_on_feed)
+  per_dat$bw_first_period[i] <- feed_bw[first_row, "pen_bodyweight"]
+  per_dat$bw_second_period[i] <- feed_bw[second_row, "pen_bodyweight"]
+  per_dat$removal_weight[i]  <- feed_bw[second_row, "removal_weight"]
+
+  per_dat$bwg[i] <- feed_bw[second_row, "bw_av"] - feed_bw[first_row, "bw_av"]
+
+  bwg <- sum(feed_bw[second_row, "pen_bodyweight"],
+             feed_bw[second_row, "removal_weight"], na.rm = TRUE) -
+    feed_bw[first_row, "pen_bodyweight"]
+
+  raw_fi <- as.numeric(feed_bw[second_row, "pen_feed_intake"])
+
+  per_dat$adg[i]  <- bwg / days_on_feed
+  ## FCR: retain all values including negatives — they are biologically real
+  ## in a challenge model and are explained in context.
+  per_dat$fcr[i]  <- if_else(raw_fi <= 0, NA_real_, raw_fi / bwg)
+  ## GF = inverse of FCR; interpretable when BWG < 0 (negative GF = weight loss)
+  per_dat$gf[i]   <- if_else(raw_fi <= 0, NA_real_, bwg / raw_fi)
+  per_dat$fi[i]   <- raw_fi
+  per_dat$adfi[i] <- raw_fi / days_on_feed
+}
+
+per_dat <- per_dat[, c(
+  "treatment_full_name", "pen", "weight_block", "room",
+  "trial_period", "trial_period_label", "first_period", "second_period",
+  "fi", "bwg", "fcr", "gf", "adfi", "adg"
+)]
+per_dat <- per_dat[!duplicated(per_dat), ]
+
+per_dat_long <- as.data.frame(pivot_longer(
+  per_dat,
+  cols = c("fi", "bwg", "fcr", "gf", "adfi", "adg")
+))
+
+per_dat_long$name <- fct_relevel(per_dat_long$name,
+                                  c("fi", "bwg", "fcr", "gf", "adfi", "adg"))
+per_dat_long$trial_period_label <-
+  fct_relevel(per_dat_long$trial_period_label, trial_period_labs)
+per_dat_long <- per_dat_long %>%
+  mutate(value = if_else(name == "adg", value * 1000, value))
+
+plotting_cols <- brewer.pal(
+  length(levels(per_dat_long$treatment_full_name)), "Spectral"
+)
+names(plotting_cols) <- levels(per_dat_long$treatment_full_name)
+
+## workbooks
+wb_raw_data <- openxlsx::createWorkbook()
+wb_results  <- openxlsx::createWorkbook()
+addWorksheet(wb_raw_data, "barn_data")
+```
+
+<br>
+
+## Raw pen-level data table
+
+```{r raw-table, message=FALSE, warning=FALSE, eval=TRUE}
+df_raw <- feed_bw %>%
+  mutate(pen_bodyweight  = round(pen_bodyweight, 1),
+         pen_feed_intake = round(pen_feed_intake, 1),
+         bw_av       = round(bw_av, 1)) %>%
+  select(treatment_full_name, pen, weight_block, room,
+         first_period, second_period, trial_period,
+         pen_bodyweight, bw_av, pen_feed_intake,
+         removal_weight, n_removals)
+
+datatable_func(df_raw)
+
+addWorksheet(wb_raw_data, "performance_data")
+writeData(wb_raw_data, sheet = 2, per_dat, colNames = TRUE)
+```
+
+This table shows the analysis-ready pen-level raw data. Each row
+corresponds to a pen within a treatment and trial period, with the
+associated body weight, average pig weight, feed intake, and removal
+information. These data were then used to calculate BWG, FCR, GF,
+ADFI, and ADG for the statistical analysis.
+
+Note on FCR interpretation during the challenge phase: **FCR can be
+negative when pigs lose weight** (i.e. when the denominator BWG < 0). In a
+controlled F18 challenge model this is an expected and biologically
+meaningful outcome — it reflects the severity of the acute response, not
+a data error. Negative FCR values are reported and should be interpreted
+as indicating net weight loss during that period. The GF column provides
+a complementary metric with consistent directionality.
+
+<br>
+
+---
+
+# Performance: data analyses and results
+
+## Body weight (kg): mean ± SD
+
+```{r bw-summary-table, message=FALSE, warning=FALSE, eval=TRUE}
+summarize_data <- function(data, group_vars, summary_var) {
+  data %>%
+    group_by(across(all_of(group_vars))) %>%
+    summarise(
+      mean = round(mean(.data[[summary_var]], na.rm = TRUE), 2),
+      sd  = round(sd(.data[[summary_var]],  na.rm = TRUE), 2),
+      cov = round((sd / mean) * 100, 1),
+      .groups = "drop"
+    )
+}
+
+df_bw <- summarize_data(
+  data    = feed_bw,
+  group_vars = c("treatment_full_name", "day_of_trial"),
+  summary_var = "bw_av"
+) %>%
+  pivot_longer(cols = c(mean, sd, cov), names_to = "metric", values_to = "value") %>%
+  pivot_wider(names_from = treatment_full_name, values_from = value) %>%
+  as.data.frame()
+
+datatable_func(df_bw)
+
+addWorksheet(wb_results, "raw_mean_body_weight")
+writeData(wb_results, sheet = "raw_mean_body_weight", df_bw, colNames = TRUE)
+```
+
+The table above summarises pen-level average body weight by treatment
+and day of trial. Pigs began the study with very similar body weights
+across treatments, indicating successful randomisation. Over time, the
+strict negative control maintained higher body weights than the
+challenged positive control, while the IVP treatments showed
+intermediate values, suggesting partial mitigation of the challenge
+effect.
+
+Mean body weight per pig was summarised by treatment and day of trial.
+Error bands represent the standard error of the mean.
+
+<br>
+
+```{r bw-plot, message=FALSE, warning=FALSE, eval=TRUE, fig.height=5, fig.width=12}
+bw_summary <- feed_bw %>%
+  group_by(treatment_full_name, day_of_trial) %>%
+  summarise(mean_bw = mean(bw_av, na.rm = TRUE),
+            sd_bw = sd(bw_av, na.rm = TRUE),
+            n = n(),
+            se_bw = sd_bw / sqrt(n),
+            .groups = "drop")
+
+bw_plot <- ggplot(
+  bw_summary,
+  aes(x = day_of_trial, y = mean_bw,
+      color = treatment_full_name, fill = treatment_full_name,
+      group = treatment_full_name)
+) +
+  geom_ribbon(aes(ymin = mean_bw - se_bw, ymax = mean_bw + se_bw),
+              alpha = 0.15, color = NA) +
+  geom_line(linewidth = 1.1) +
+  geom_point(size = 3, shape = 21, color = "black") +
+  scale_color_novonesis_d10() +
+  scale_fill_novonesis_d10() +
+  scale_x_continuous(breaks = sort(unique(bw_summary$day_of_trial))) +
+  scale_y_continuous(labels = number_format(accuracy = 0.1)) +
+  labs(x = "Day of trial", y = "Mean body weight per pig (kg)",
+       color = "Treatment", fill = "Treatment") +
+  theme_novonesis_leading_dark(palette = "blue", base_size = 13) +
+  theme(legend.position = "bottom",
+        axis.text = element_text(size = 11),
+        axis.title = element_text(size = 13, face = "bold"),
+        legend.title = element_text(face = "bold", size = 11),
+        legend.text = element_text(size = 10))
+
+bw_plot <- add_logo_title(
+  plot = bw_plot,
+  title = "Body weight over time",
+  version = "monogram", palette = "blue",
+  tone = "Juniper", lights = "off",
+  title_size = 19, logo_width = 0.06,
+  logo_text_gap = 0.01, header_height = 0.12
+)
+
+bw_plot
+```
+
+Error bands represent the standard error of the mean. The negative
+control maintained higher body weights throughout the nursery period,
+while the challenged groups separated progressively, with the IVP
+treatments showing partial recovery relative to the positive control.
+
+<br>
+
+## Pen-level performance summary (mean ± SD)
+
+```{r perf-summary, message=FALSE, warning=FALSE, eval=TRUE}
+per_dat_long$trial_period_label <-
+  fct_relevel(as.factor(per_dat_long$trial_period_label), trial_period_labs)
+
+data_summary <- per_dat_long %>%
+  group_by(treatment_full_name, name, trial_period_label) %>%
+  mutate(is_outlier = is_outlier(value)) %>%
+  filter(!is_outlier) %>%
+  summarise(
+    mean_value = mean(value, na.rm = TRUE),
+    sd_value  = sd(value,  na.rm = TRUE),
+    .groups  = "drop"
+  ) %>%
+  mutate(
+    mean_value = case_when(
+      name == "adg"           ~ round(mean_value, 0),
+      name %in% c("fi", "bwg", "adfi") ~ round(mean_value, 2),
+      name %in% c("fcr", "gf")     ~ round(mean_value, 3),
+      TRUE               ~ mean_value
+    ),
+    sd_value = case_when(
+      name == "adg"           ~ round(sd_value, 0),
+      name %in% c("fi", "bwg", "adfi") ~ round(sd_value, 2),
+      name %in% c("fcr", "gf")     ~ round(sd_value, 3),
+      TRUE               ~ sd_value
+    )
+  ) %>%
+  unite(col, mean_value, sd_value, sep = " \u00b1 ") %>%
+  pivot_wider(names_from = treatment_full_name, values_from = col) %>%
+  as.data.frame()
+
+data_summary$name <- fct_recode(
+  data_summary$name,
+  "Feed intake (kg)"         = "fi",
+  "Body weight gain (kg)"      = "bwg",
+  "FCR (kg:kg)"            = "fcr",
+  "Gain:Feed ratio (kg:kg)"    = "gf",
+  "Average daily feed intake (kg)" = "adfi",
+  "Average daily gain (g)"     = "adg"
+)
+
+data_summary <- data_summary %>% rename(variable = name, period = trial_period_label)
+
+datatable_func(data_summary)
+
+addWorksheet(wb_results, "raw_mean_performance")
+writeData(wb_results, sheet = "raw_mean_performance", data_summary, colNames = TRUE)
+```
+
+Pen-level performance outcomes were summarised by treatment group and
+trial period using the raw pen-level performance dataset. For each
+metric and period, outliers were removed using the boxplot rule (1.5 ×
+IQR) before calculating treatment means and standard deviations. The
+final table presents results in a compact mean ± SD format to facilitate
+comparison across treatments and periods.
+
+GF (Gain:Feed ratio) is included alongside FCR. During the acute
+challenge phase (Day 0-8) pigs may lose weight, yielding a negative FCR
+that faithfully reflects the severity of illness. GF provides a
+complementary metric with consistent directionality: negative GF means
+net weight loss per unit of feed; positive GF means net gain. Both
+metrics are reported; FCR is preferred when BWG > 0, GF is the cleaner
+summary when BWG ≤ 0.
+
+<br>
+
+## Mixed model analyses — pen performance
+
+Below a series of dotplots are presented showing **average daily feed
+intake (kg/day)**, **average daily gain (g/day)**, **FCR (kg:kg)**, and
+**Gain:Feed ratio (kg:kg)** by treatment group for the different trial
+periods.
+
+- **Black lines** represent the median values per treatment group; the
+  box shows the interquartile range.
+- Data were analysed using a **mixed-effects model** with **weight
+  block** and **room** as random effects and **starting body weight**
+  as a covariate.
+- **Dunnett's tests** were used to compare the IVP treatments against
+  the **F18-ETEC (PC)** challenge group.
+- Groups sharing the same letter are **not statistically different**
+  from F18-ETEC (PC) in their mean values for that period.
+- FCR may be negative during periods where pigs lose weight. This is
+  expected in the acute challenge phase and is not a data error — see
+  the GF panel for a metric with consistent directionality under
+  negative gain.
+
+Each period is shown twice: first with all data points, then with
+statistical outliers removed (IQR rule).
+
+```{r dotplot-helpers, message=FALSE, warning=FALSE, eval=TRUE}
+per_dat_long_no_out <- per_dat_long %>%
+  group_by(trial_period, name) %>%
+  mutate(outlier = is_outlier(value),
+         value  = ifelse(outlier, NA, value)) %>%
+  as.data.frame()
+
+to_num <- function(x) {
+  if (is.list(x)) purrr::map_dbl(x, ~ as.numeric(.x))
+  else as.numeric(x)
+}
+
+per_dat_wide <- per_dat_long %>%
+  select("treatment_full_name", "pen", "weight_block", "room",
+         "trial_period", "name", "value") %>%
+  pivot_wider(names_from = c(name, trial_period), values_from = value) %>%
+  mutate(across(where(is.list), to_num),
+         room = as.factor(room),
+         weight_block = as.factor(weight_block)) %>%
+  as.data.frame()
+
+start_weight <- feed_bw %>%
+  filter(day_of_trial %in% 0) %>%
+  group_by(pen) %>%
+  summarise(start_weight = mean(pen_bodyweight, na.rm = TRUE) / n_animal,
+            n_animal = n_animal, .groups = "drop") %>%
+  as.data.frame()
+
+per_dat_wide <- left_join(per_dat_wide, start_weight, by = "pen")
+
+per_dat_wide_no_out <- as.data.frame(
+  find_and_replace_outliers(per_dat_wide, colnames(per_dat_wide)[5:ncol(per_dat_wide)])
+)
+
+## ---- dotplot function ----
+dotplot_general <- function(data, gtitles, y_lab_title,
+                            t_labs, plot_cols, dot_size,
+                            cols_to_select, formula, tr_col,
+                            y_var_col) {
+  df <- data[, cols_to_select]
+  df$Treatment_ID <- as.factor(fct_relevel(df[[tr_col]], t_labs))
+  df$Value    <- df[[y_var_col]]
+
+  df <- df %>%
+    group_by(Treatment_ID) %>%
+    filter(sum(!is.na(Value)) > 0) %>%
+    ungroup() %>%
+    mutate(Treatment_ID = droplevels(Treatment_ID))
+  t_labs_use <- levels(df$Treatment_ID)
+
+  mod <- lmer(formula, data = df, control = lmerControl(optimizer = "bobyqa"))
+
+  dunnett_test  <- glht(mod, linfct = mcp(Treatment_ID = "Dunnett"))
+  dunnett_summary <- summary(dunnett_test)
+  p_values    <- dunnett_summary$test$pvalues
+  names(p_values) <- rownames(dunnett_summary$test$coefficients)
+  significant   <- p_values < 0.05
+
+  letters.df <- rbind(
+    data.frame(Treatment_ID = t_labs_use[1], p_value = NA,
+               significant = NA, Letter = "a"),
+    data.frame(Treatment_ID = t_labs_use[-1], p_value = p_values,
+               significant = significant,
+               Letter = if_else(significant, "b", "a"))
+  ) %>%
+    mutate(
+      Letter = if_else((p_value > 0.05 & p_value < 0.1),
+                       "\u2020", as.character(Letter)),
+      Letter = if_else(Treatment_ID %in% t_labs_use[1], "a", as.character(Letter))
+    )
+
+  placement    <- matrix(NA, ncol = 2, nrow = length(t_labs_use))
+  rownames(placement) <- t_labs_use
+  placement[, 1]  <- t_labs_use
+  colnames(placement) <- c("Treatment_ID", "Placement.Value")
+  for (p in 1:length(t_labs_use)) {
+    x <- df[which(df[, 1] %in% rownames(placement)[p]), ]
+    placement[p, 2] <- quantile(x[, "Value"], na.rm = TRUE)[4]
+  }
+  placement      <- as.data.frame(placement)
+  letters.df     <- left_join(letters.df, placement) %>%
+    mutate(Placement.Value = as.numeric(Placement.Value),
+           Letter = toupper(Letter))
+
+  ggplot(df, aes(x = Treatment_ID, y = Value, fill = Treatment_ID)) +
+    geom_boxplot(alpha = 0.5, outlier.shape = NA, color = "black") +
+    geom_point(shape = 21, position = "jitter",
+               size = dot_size, alpha = 0.7, color = "black") +
+    labs(x = "", y = y_lab_title) +
+    scale_x_discrete(labels = t_labs, drop = FALSE) +
+    theme(axis.text.y = element_text(face = "bold", color = "black"),
+          axis.text.x = element_blank(),
+          legend.position = "bottom",
+          legend.title.position = "top",
+          legend.box = "horizontal") +
+    {if (is.null(plot_cols))
+      scale_fill_brewer(palette = "Spectral", name = "Treatment",
+                        labels = t_labs, drop = FALSE)} +
+    {if (!is.null(plot_cols))
+      scale_fill_manual(values = plot_cols, name = "Treatment",
+                        labels = t_labs, drop = TRUE)} +
+    scale_y_continuous(breaks = pretty_breaks()) +
+    {if (length(unique(letters.df$Letter)) > 1)
+      geom_label(data = letters.df,
+                 aes(x = Treatment_ID, y = Placement.Value, label = Letter),
+                 size = 5, alpha = 0.5, color = "black", vjust = 0.5,
+                 fontface = "bold", show.legend = FALSE, nudge_x = 0.3)} +
+    ggtitle(gtitles)
+}
+
+## ---- ls-means function ----
+ls_mean_tab_glht_general <- function(data, cols_to_select, y_var_col,
+                                     tr_col, formula, t_labs) {
+  df <- data[, cols_to_select]
+  df$Treatment_ID <- as.factor(fct_relevel(df[[tr_col]], t_labs))
+  df$Value    <- df[[y_var_col]]
+
+  df <- df %>%
+    group_by(Treatment_ID) %>%
+    filter(sum(!is.na(Value)) > 0) %>%
+    ungroup() %>%
+    mutate(Treatment_ID = droplevels(Treatment_ID))
+  t_labs_use <- levels(df$Treatment_ID)
+
+  if (length(t_labs_use) < 2) {
+    message("Skipping ", y_var_col, ": fewer than 2 treatments with valid data")
+    return(NULL)
+  }
+
+  mod  <- lmer(formula, data = df, control = lmerControl(optimizer = "bobyqa"))
+  df1  <- as.data.frame(emmeans(mod, "Treatment_ID"))
+
+  dunnett_test  <- glht(mod, linfct = mcp(Treatment_ID = "Dunnett"))
+  dunnett_summary <- summary(dunnett_test)
+  p_values    <- dunnett_summary$test$pvalues
+  names(p_values) <- rownames(dunnett_summary$test$coefficients)
+  significant   <- p_values < 0.05
+
+  df2 <- rbind(
+    data.frame(Treatment_ID = t_labs_use[1], p_value = NA,
+               significant = NA, Letter = "a"),
+    data.frame(Treatment_ID = t_labs_use[-1], p_value = p_values,
+               significant = significant,
+               Letter = if_else(significant, "b", "a"))
+  ) %>%
+    mutate(
+      Letter = if_else((p_value > 0.05 & p_value < 0.1),
+                       "\u2020", as.character(Letter)),
+      Letter = if_else(Treatment_ID %in% t_labs_use[1], "a", as.character(Letter)),
+      Letter = toupper(Letter)
+    )
+
+  res <- cbind(df1, df2[, -1]) %>%
+    mutate(
+      Letter = if_else((p_value > 0.05 & p_value < 0.1), "\u2020",
+                       as.character(Letter)),
+      Letter = if_else(is.na(Letter), "A", as.character(Letter))
+    )
+  colnames(res)[c(5:6, 9)] <- c("lower_cl", "upper_cl", "cld")
+  res[, "cld"] <- toupper(res[, "cld"])
+
+  for (i in seq_along(rownames(Anova(mod)))) {
+    res[[paste0("p_value_", rownames(Anova(mod))[i])]] <- Anova(mod)$"Pr(>Chisq)"[i]
+  }
+  return(res)
+}
+
+## ---- ls-means summary table function ----
+ls_mean_sum_tab_general <- function(vars, t_labs, row_labs, round_levs,
+                                    res_list, ff_p_val_cols,
+                                    cont_p_val_col, ff_col_names) {
+  res <- matrix(NA, nrow = length(vars),
+                ncol = sum(c(length(t_labs) + 1,
+                             length(ff_p_val_cols),
+                             length(which(!is.na(res_list[[1]]$p_value))))))
+  colnames(res) <- c(t_labs, "SEM", ff_col_names,
+                     paste("Cont:", res_list[[1]]$Treatment_ID[!is.na(res_list[[1]]$p_value)]))
+  rownames(res) <- row_labs
+
+  for (i in 1:length(vars)) {
+    if (length(unique(res_list[[i]][, "cld"])) == 1)
+      res[i, 1:length(t_labs)] <- paste(round(res_list[[i]][, "emmean"], digits = round_levs[i]))
+    else
+      res[i, 1:length(t_labs)] <- paste(round(res_list[[i]][, "emmean"], digits = round_levs[i]),
+                                         res_list[[i]][, "cld"], sep = " ")
+    res[i, length(t_labs) + 1] <- round(res_list[[i]]$SE[2], digits = round_levs[i] + 1)
+    res[i, ff_col_names] <- res_list[[i]] %>%
+      select(ff_p_val_cols) %>% slice(1) %>% unlist() %>% round(digits = 3)
+    res[i, which(!colnames(res) %in% c(t_labs, "SEM", ff_col_names))] <-
+      res_list[[i]] %>% select(p_value) %>% pull() %>% na.omit() %>% round(3) %>% as.vector()
+  }
+
+  zero_idx <- which(res[, ] == "0", arr.ind = TRUE)
+  if (nrow(zero_idx) > 0)
+    for (j in 1:nrow(zero_idx))
+      res[zero_idx[j, "row"], zero_idx[j, "col"]] <- "<0.001"
+  return(res)
+}
+
+## ---- metric/period maps and helper to show 4-panel plots ----
+t_labs    <- c("F18-ETEC (PC)", "No Chall (NC)", "1BP (BP-L)", "2BP (BP-SL)")
+ploting_cols <- brewer.pal(length(t_labs), "Spectral")
+names(ploting_cols) <- t_labs
+
+period_map <- c(
+  "0_8" = "Day 0-8",  "8_15"  = "Day 8-15",  "15_22" = "Day 15-22",
+  "22_29" = "Day 22-29", "29_36" = "Day 29-36",
+  "0_15" = "Day 0-15", "0_22" = "Day 0-22",  "0_29"  = "Day 0-29",
+  "0_36" = "Day 0-36", "8_22" = "Day 8-22",  "8_29"  = "Day 8-29",
+  "8_36" = "Day 8-36"
+)
+
+metric_map <- c(
+  fi  = "Feed intake (kg)",
+  bwg = "Body weight gain (kg)",
+  fcr = "FCR (kg:kg)",
+  gf  = "Gain:Feed ratio (kg:kg)",
+  adfi = "Average daily feed intake (kg)",
+  adg = "Average daily gain (g)"
+)
+
+get_plot_title <- function(col_name) {
+  period <- sub("^(fi|bwg|fcr|gf|adfi|adg)_", "", col_name)
+  unname(period_map[period])
+}
+
+get_y_lab <- function(col_name) {
+  metric <- sub("_.*$", "", col_name)
+  unname(metric_map[metric])
+}
+
+formula_use <- as.formula(
+  "Value ~ Treatment_ID + start_weight + (1|weight_block) + (1|room)"
+)
+
+metric_cols <- grep("^(fi|bwg|fcr|gf|adfi|adg)_",
+                    colnames(per_dat_wide), value = TRUE)
+
+arrange_plots <- function(plot_list, plot_indices, ts, n_col_num, n_row_num) {
+  modify_plot <- function(plot) plot + ts + theme(text = element_text(size = 20))
+  plots_to_arrange <- lapply(seq_along(plot_indices), function(i) {
+    index <- plot_indices[i]
+    if ((i - 1) %% n_col_num == 0) modify_plot(plot_list[[index]])
+    else plot_list[[index]] + ggtitle("") + ts
+  })
+  ggarrange(plotlist = plots_to_arrange, ncol = n_col_num, nrow = n_row_num,
+            common.legend = TRUE, legend = "bottom")
+}
+
+show_four <- function(period, verbose = FALSE, plot_list = plot_dot) {
+  selected_names <- c(paste0("adfi_", period), paste0("adg_",  period),
+                      paste0("fcr_",  period), paste0("gf_",   period))
+  selected_idx <- match(selected_names, names(plot_list))
+  if (verbose) message("Requested period: ", period)
+  arrange_plots(plot_list, selected_idx, ts, n_col_num = 4, n_row_num = 1)
+}
+
+show_four_no_out <- function(period, verbose = FALSE)
+  show_four(period = period, verbose = verbose, plot_list = plot_dot_no_out)
+```
+
+```{r dotplots-build, message=FALSE, warning=FALSE, eval=TRUE}
+plot_dot <- mapply(
+  dotplot_general,
+  data     = list(per_dat_wide),
+  gtitles    = sapply(metric_cols, get_plot_title),
+  y_lab_title  = sapply(metric_cols, get_y_lab),
+  t_labs    = list(t_labs),
+  plot_cols   = list(ploting_cols),
+  dot_size   = list(2.5),
+  cols_to_select = lapply(metric_cols, function(col)
+    c("treatment_full_name", "weight_block", "room", "start_weight", col)),
+  tr_col    = list("treatment_full_name"),
+  y_var_col   = metric_cols,
+  formula    = list(formula_use),
+  SIMPLIFY   = FALSE
+)
+
+plot_dot_no_out <- mapply(
+  dotplot_general,
+  data     = list(per_dat_wide_no_out),
+  gtitles    = sapply(metric_cols, get_plot_title),
+  y_lab_title  = sapply(metric_cols, get_y_lab),
+  t_labs    = list(t_labs),
+  plot_cols   = list(ploting_cols),
+  dot_size   = list(2.5),
+  cols_to_select = lapply(metric_cols, function(col)
+    c("treatment_full_name", "weight_block", "room", "start_weight", col)),
+  tr_col    = list("treatment_full_name"),
+  y_var_col   = metric_cols,
+  formula    = list(formula_use),
+  SIMPLIFY   = FALSE
+)
+
+names(plot_dot)    <- metric_cols
+names(plot_dot_no_out) <- metric_cols
+```
+
+<br>
+
+## Day 0-36
+
+```{r p-0-36, message=FALSE, warning=FALSE, fig.width=16, fig.height=5, eval=TRUE}
+show_four("0_36")
+show_four_no_out("0_36")
+```
+
+## Day 8-36
+
+```{r p-8-36, message=FALSE, warning=FALSE, fig.width=16, fig.height=5, eval=TRUE}
+show_four("8_36")
+show_four_no_out("8_36")
+```
+
+## Day 0-8
+
+```{r p-0-8, message=FALSE, warning=FALSE, fig.width=16, fig.height=5, eval=TRUE}
+show_four("0_8")
+show_four_no_out("0_8")
+```
+
+## Day 8-15
+
+```{r p-8-15, message=FALSE, warning=FALSE, fig.width=16, fig.height=5, eval=TRUE}
+show_four("8_15")
+show_four_no_out("8_15")
+```
+
+## Day 15-22
+
+```{r p-15-22, message=FALSE, warning=FALSE, fig.width=16, fig.height=5, eval=TRUE}
+show_four("15_22")
+show_four_no_out("15_22")
+```
+
+## Day 22-29
+
+```{r p-22-29, message=FALSE, warning=FALSE, fig.width=16, fig.height=5, eval=TRUE}
+show_four("22_29")
+show_four_no_out("22_29")
+```
+
+## Day 29-36
+
+```{r p-29-36, message=FALSE, warning=FALSE, fig.width=16, fig.height=5, eval=TRUE}
+show_four("29_36")
+show_four_no_out("29_36")
+```
+
+### Day 0-15
+
+```{r p-0-15, message=FALSE, warning=FALSE, fig.width=16, fig.height=5, eval=TRUE}
+show_four("0_15"); show_four_no_out("0_15")
+```
+
+### Day 0-22
+
+```{r p-0-22, message=FALSE, warning=FALSE, fig.width=16, fig.height=5, eval=TRUE}
+show_four("0_22"); show_four_no_out("0_22")
+```
+
+### Day 0-29
+
+```{r p-0-29, message=FALSE, warning=FALSE, fig.width=16, fig.height=5, eval=TRUE}
+show_four("0_29"); show_four_no_out("0_29")
+```
+
+### Day 8-22
+
+```{r p-8-22, message=FALSE, warning=FALSE, fig.width=16, fig.height=5, eval=TRUE}
+show_four("8_22"); show_four_no_out("8_22")
+```
+
+### Day 8-29
+
+```{r p-8-29, message=FALSE, warning=FALSE, fig.width=16, fig.height=5, eval=TRUE}
+show_four("8_29"); show_four_no_out("8_29")
+```
+
+<br>
+
+## LS means — pen performance
+
+```{r lsmeans-pen, message=FALSE, warning=FALSE, fig.width=12, fig.height=5, eval=TRUE}
+res_list_per <- mapply(
+  ls_mean_tab_glht_general,
+  data     = list(per_dat_wide_no_out),
+  y_var_col   = metric_cols,
+  tr_col    = list("treatment_full_name"),
+  formula    = list(formula_use),
+  cols_to_select = lapply(metric_cols, function(col)
+    c("treatment_full_name", "weight_block", "room", "start_weight", col)),
+  t_labs    = list(t_labs),
+  SIMPLIFY   = FALSE
+)
+names(res_list_per) <- metric_cols
+
+build_lsmean_row <- function(x, metric_name, t_labs) {
+  period  <- sub("^(fi|bwg|fcr|gf|adfi|adg)_", "", metric_name)
+  metric  <- sub("_.*$", "", metric_name)
+  row_lab <- paste0(period_map[period], ": ", metric_map[metric])
+
+  x <- x %>%
+    mutate(Treatment_ID = factor(Treatment_ID, levels = t_labs)) %>%
+    arrange(Treatment_ID)
+
+  emmeans_fmt <- paste0(round(x$emmean, 1), " ", x$cld)
+  out <- as.list(emmeans_fmt)
+  names(out) <- as.character(x$Treatment_ID)
+  out[["SEM"]]      <- as.character(round(x$SE[1], 2))
+  out[["Treatment"]]  <- as.character(signif(x$p_value_Treatment_ID[1], 3))
+  out[["Start weight"]] <- as.character(signif(x$p_value_start_weight[1], 3))
+
+  if ("p_value" %in% names(x)) {
+    pvals <- x %>% select(Treatment_ID, p_value) %>%
+      mutate(Treatment_ID = as.character(Treatment_ID)) %>%
+      filter(!is.na(p_value))
+    if (nrow(pvals) > 0) {
+      cont <- as.list(as.character(signif(pvals$p_value, 3)))
+      names(cont) <- paste0("Cont: ", pvals$Treatment_ID)
+      out <- c(out, cont)
+    }
+  }
+  tibble(Variable = row_lab, !!!out)
+}
+
+res_ov_per_periods_fix <- map2_dfr(res_list_per, names(res_list_per),
+                                    ~ build_lsmean_row(.x, .y, t_labs))
+
+df_lsmeans <- cbind(rownames(res_ov_per_periods_fix), res_ov_per_periods_fix)
+colnames(df_lsmeans)[1] <- "Variable"
+
+datatable(
+  df_lsmeans,
+  options = list(scrollY = 500, scrollX = TRUE, paging = FALSE,
+                 dom = "t", ordering = FALSE),
+  rownames = FALSE, style = "bootstrap5"
+) %>%
+  formatStyle(columns = names(df_lsmeans), textAlign = "center") %>%
+  formatStyle(
+    columns = names(df_lsmeans)[grepl("^Cont:", names(df_lsmeans))],
+    target  = "row",
+    backgroundColor = styleInterval(
+      c(0.05, 0.10), c("#ffd6d6", "#fff3cd", "white")
+    )
+  )
+
+addWorksheet(wb_results, "ls_mean_pen_per")
+writeData(wb_results, sheet = "ls_mean_pen_per", df_lsmeans, colNames = TRUE)
+```
+
+The table above presents the model-based least-squares means for each
+performance metric and period, fitted using the mixed model described in
+the statistical model formulation section. Letters indicate
+Dunnett-adjusted significant differences versus the F18-ETEC (PC)
+group; rows highlighted in red reached significance (P < 0.05) and rows
+highlighted in yellow indicate a tendency (P < 0.10). The SEM column
+gives the standard error from the mixed model, and p-values for the
+treatment factor and the start weight covariate are also shown. The
+dataset used here had outliers removed prior to model fitting.
+
+<br>
+
+---
+
+# Individual fecal scores, body condition and demeanor
+
+Individual-level clinical scores (fecal score, demeanor score, and
+abdominal score) were recorded daily throughout the trial. These
+variables reflect the acute clinical response to the F18 challenge and
+are key indicators of treatment efficacy during the challenge phase.
+Scores were treated as continuous variables in the mixed-effects models.
+The summaries not denoted as LS means are based on the raw data.
+
+<br>
+
+```{r ind-data-load, message=FALSE, warning=FALSE, fig.height=5, fig.width=8}
+individual_animal_inventory <-
+  as.data.frame(read_excel(file, sheet = "individual_animal_inventory")) %>%
+  select(animal_id, sex, mother_id)
+
+individual_measures <-
+  as.data.frame(read_excel(file, sheet = "individual_measures")) %>%
+  left_join(select(trial_dates, date_of_measure, day_of_trial, trial_period),
+            by = "date_of_measure") %>%
+  select(pen, animal_id, variable_measured, variable_unit,
+         variable_value, day_of_trial) %>%
+  left_join(select(treatment_group_metadata, treatment_full_name, pen, room, weight_block),
+            by = "pen") %>%
+  left_join(select(individual_animal_inventory, animal_id, sex, mother_id),
+            by = "animal_id") %>%
+  filter(!is.na(treatment_full_name)) %>%
+  distinct() %>%
+  mutate(treatment_full_name = factor(treatment_full_name),
+         variable_value = na_if(as.character(variable_value), "---")) %>%
+  filter(!is.na(variable_value))
+
+plotting_cols <- brewer.pal(
+  length(levels(individual_measures$treatment_full_name)), "Spectral"
+)
+names(plotting_cols) <- levels(individual_measures$treatment_full_name)
+
+unique_variables <- unique(individual_measures$variable_measured)
+data_frames_list <- map(unique_variables, function(var)
+  individual_measures %>% filter(variable_measured == var))
+names(data_frames_list) <- unique_variables
+invisible(list2env(data_frames_list, envir = .GlobalEnv))
+data_frames_list_day <- lapply(data_frames_list, function(df) split(df, df$day_of_trial))
+
+fecal_score_binary <- fecal_score %>%
+  mutate(fecal_score_binary = ifelse(variable_value >= 2, "Diarrhea", "No diarrhea"),
+         fecal_score_binary = as.factor(fecal_score_binary)) %>%
+  select(-variable_value) %>%
+  rename(variable_value = fecal_score_binary)
+
+fe_be_dep <- rbind(fecal_score, demeanor_score, abdominal_score) %>%
+  mutate(variable_measured = case_when(
+    variable_measured == "fecal_score"   ~ "Fecal score",
+    variable_measured == "demeanor_score" ~ "Demeanor score",
+    variable_measured == "abdominal_score" ~ "Abdominal score"
+  ))
+```
+
+<br>
+
+## Line graph: all individual observations
+
+Each line represents one animal. The panel layout separates treatments
+(rows) from score types (columns), making it straightforward to compare
+both the level and trajectory of each clinical measure across groups.
+
+<br>
+
+```{r fe-line, message=FALSE, warning=FALSE, eval=TRUE, fig.height=10, fig.width=8}
+ggplot(fe_be_dep,
+       aes(x = day_of_trial, y = variable_value, group = animal_id,
+           color = treatment_full_name, fill = treatment_full_name)) +
+  geom_point(shape = 21, size = 1, alpha = 0.7) +
+  geom_line(alpha = 0.3) +
+  facet_grid(treatment_full_name ~ variable_measured, scales = "free_y") +
+  scale_color_novonesis_d10(color_positions = c(4, 5)) +
+  scale_fill_novonesis_d10() +
+  scale_x_continuous(breaks = seq(0, 35, 5)) +
+  labs(x = "Day of Trial", y = "Score", color = "Treatment", fill = "Treatment") +
+  theme_novonesis_leading_light(palette = "green") +
+  theme(legend.position = "bottom", strip.text = element_text(size = 8),
+        axis.text = element_text(size = 10),
+        axis.title = element_text(size = 12, face = "bold"),
+        legend.title = element_text(face = "bold"))
+```
+
+<br>
+
+## Bargraph: total counts
+
+The stacked bar chart shows the absolute number of observations at each
+score level per day and treatment. This is useful for checking the
+spread of scores across categories and identifying days with high
+proportions of elevated scores.
+
+<br>
+
+```{r fe-bar-count, message=FALSE, warning=FALSE, eval=TRUE, fig.height=8, fig.width=12}
+pbar1 <- ggplot(
+  fe_be_dep %>% mutate(variable_value = as.factor(variable_value)),
+  aes(x = as.factor(day_of_trial), fill = variable_value)
+) +
+  geom_bar(position = "stack", color = "black") +
+  facet_grid(treatment_full_name ~ variable_measured, scales = "free_y") +
+  labs(x = "Day of Trial", y = "Frequency", fill = "Score") +
+  scale_fill_novonesis_d10() +
+  theme_novonesis_leading_dark(palette = "green") +
+  theme(legend.position = "bottom", strip.text = element_text(size = 10),
+        axis.text.x = element_text(size = 10, angle = 90),
+        axis.text.y = element_text(size = 10),
+        axis.title = element_text(size = 8),
+        legend.title = element_text(face = "bold"))
+
+add_logo_simple(pbar1, version = "wordmark", palette = "green",
+                position = "bottom-right", size = 2, tone = "Algae")
+```
+
+<br>
+
+## Bargraph: proportions
+
+The proportional bar chart rescales each day to 100%, making it easier
+to compare the distribution of score categories across treatment groups
+regardless of differences in sample size.
+
+<br>
+
+```{r fe-bar-prop, message=FALSE, warning=FALSE, eval=TRUE, fig.height=8, fig.width=12}
+fe_be_dep_prop <- fe_be_dep %>%
+  mutate(variable_value = as.factor(variable_value)) %>%
+  group_by(day_of_trial, treatment_full_name, variable_measured, variable_value) %>%
+  summarise(count = n(),
+            mean = mean(as.numeric(variable_value), na.rm = TRUE),
+            sd  = sd(as.numeric(variable_value),  na.rm = TRUE),
+            .groups = "drop") %>%
+  group_by(day_of_trial, treatment_full_name, variable_measured) %>%
+  mutate(proportion = count / sum(count))
+
+pbar2 <- ggplot(fe_be_dep_prop,
+                aes(x = as.factor(day_of_trial), y = proportion,
+                    fill = variable_value)) +
+  geom_bar(stat = "identity", position = "stack", color = "black") +
+  facet_grid(treatment_full_name ~ variable_measured, scales = "free_y") +
+  labs(x = "Day of Trial", y = "Proportion", fill = "Score") +
+  scale_fill_novonesis_d10() +
+  theme_novonesis_leading_dark(palette = "green") +
+  theme(legend.position = "bottom", strip.text = element_text(size = 10),
+        axis.text.x = element_text(size = 10, angle = 90),
+        axis.text.y = element_text(size = 10),
+        axis.title = element_text(size = 12),
+        legend.title = element_text(face = "bold"))
+
+add_logo_simple(pbar2, version = "wordmark", palette = "green",
+                position = "bottom-right", size = 2, tone = "Algae")
+```
+
+<br>
+
+## Summary statistics table
+
+Counts and proportions of observations per score category, treatment
+group, and day of trial. These are derived from the raw data before
+any modelling.
+
+<br>
+
+```{r fe-summary-table, message=FALSE, warning=FALSE, eval=TRUE}
+ls_means_table <- function(model) {
+  emm <- emmeans(model, ~ treatment_full_name | day_of_trial)
+  pc_contrasts <- contrast(emm, method = "trt.vs.ctrl",
+                           ref = "F18-ETEC (PC)", adjust = "dunnett")
+  pairwise_summary_df <- as.data.frame(pc_contrasts) %>%
+    separate(contrast, into = c("treatment_full_name", "control"), sep = " - ") %>%
+    select(treatment_full_name, day_of_trial, p.value)
+
+  ls_means <- as.data.frame(emm) %>%
+    select(treatment_full_name, day_of_trial, emmean) %>%
+    mutate(emmean = round(emmean, 1), cld = "A") %>%
+    left_join(pairwise_summary_df, by = c("treatment_full_name", "day_of_trial")) %>%
+    mutate(cld = case_when(
+      !is.na(p.value) & p.value > 0.05 & p.value < 0.1 ~ "\u2020",
+      !is.na(p.value) & p.value < 0.05           ~ "B",
+      TRUE                           ~ cld
+    )) %>%
+    group_by(day_of_trial) %>%
+    mutate(
+      value = if (n_distinct(cld) == 1) {
+        gsub(" ", "", paste(emmean))
+      } else {
+        gsub(" ", "", paste(emmean, cld))
+      },
+      value = sub("([0-9\\.]+)([A-Z\u2020]+)$", "\\1 \\2", value)
+    ) %>%
+    ungroup() %>%
+    select(day_of_trial, treatment_full_name, value) %>%
+    pivot_wider(names_from = treatment_full_name, values_from = value) %>%
+    as.data.frame()
+  return(ls_means)
+}
+
+df_fe_prop <- fe_be_dep_prop %>%
+  mutate(proportion = round(proportion, 2)) %>%
+  rename(score = variable_value) %>%
+  select(day_of_trial, treatment_full_name, variable_measured,
+         score, count, proportion) %>%
+  as.data.frame()
+
+datatable(df_fe_prop,
+          options = list(scrollY = 400, scrollX = 400, paging = FALSE,
+                         responsive = TRUE, dom = "t", ordering = FALSE),
+          rownames = FALSE, style = "bootstrap") %>%
+  formatStyle(columns = names(df_fe_prop), textAlign = "center")
+
+addWorksheet(wb_raw_data, "fecal_body_dep_raw")
+writeData(wb_raw_data, sheet = 3, df_fe_prop, colNames = TRUE)
+```
+
+<br>
+
+## Summary statistics by week
+
+Weekly aggregation of score counts and proportions. Summing across
+days within each period gives a more stable estimate of the treatment
+effect during the challenge and recovery phases.
+
+```{r fe-weekly, message=FALSE, warning=FALSE, eval=TRUE}
+day_of_trial_period <- data.frame(day_of_trial = 0:36) %>%
+  mutate(trial_period = case_when(
+    day_of_trial <= 8  ~ "0_8",
+    day_of_trial <= 15 ~ "8_15",
+    day_of_trial <= 22 ~ "15_22",
+    day_of_trial <= 29 ~ "22_29",
+    day_of_trial <= 36 ~ "29_36",
+    TRUE          ~ NA_character_
+  )) %>%
+  left_join(periods %>% select(trial_period, trial_period_label), by = "trial_period")
+
+fe_be_dep_prop_weekly <- df_fe_prop %>%
+  left_join(day_of_trial_period, by = "day_of_trial") %>%
+  filter(!is.na(trial_period_label)) %>%
+  reframe(total_count = sum(count),
+          .by = c(treatment_full_name, variable_measured, score, trial_period_label)) %>%
+  reframe(
+    treatment_full_name = treatment_full_name,
+    variable_measured  = variable_measured,
+    score        = score,
+    trial_period_label = trial_period_label,
+    total_count     = total_count,
+    proportion     = total_count / sum(total_count),
+    .by = c(treatment_full_name, variable_measured, trial_period_label)
+  )
+
+addWorksheet(wb_raw_data, "fecal_body_dep_weekly")
+writeData(wb_raw_data, sheet = 4, fe_be_dep_prop_weekly, colNames = TRUE)
+datatable_func(fe_be_dep_prop_weekly)
+```
+
+<br>
+
+## LS means: Fecal score
+
+Least-squares means from a repeated-measures mixed model (treatment ×
+day interaction, random effects for pen, animal within pen, and weight
+block). Dunnett-adjusted contrasts versus the F18-ETEC (PC) group are
+used to identify significant differences and tendencies at each day.
+
+<br>
+
+```{r lsmeans-fecal, message=FALSE, warning=FALSE, eval=TRUE}
+model_fecal <- lmer(
+  as.numeric(variable_value) ~ treatment_full_name * day_of_trial +
+    (1 | pen/animal_id) + (1 | weight_block),
+  data = fe_be_dep %>%
+    filter(variable_measured %in% "Fecal score") %>%
+    mutate(day_of_trial = as.factor(day_of_trial),
+           treatment_full_name = relevel(treatment_full_name, ref = "F18-ETEC (PC)"))
+)
+
+datatable(ls_means_table(model_fecal),
+          options = list(scrollY = 400, scrollX = TRUE, paging = FALSE,
+                         dom = "t", ordering = FALSE),
+          rownames = FALSE, style = "bootstrap5") %>%
+  formatStyle(columns = names(ls_means_table(model_fecal)), textAlign = "center")
+
+addWorksheet(wb_results, "ls_mean_fecal")
+writeData(wb_results, sheet = "ls_mean_fecal",
+          ls_means_table(model_fecal), colNames = TRUE, rowNames = FALSE)
+```
+
+<br>
+
+## LS means: Demeanor score
+
+```{r lsmeans-demeanor, message=FALSE, warning=FALSE, eval=TRUE}
+model_dem <- lmer(
+  as.numeric(variable_value) ~ treatment_full_name * day_of_trial +
+    (1 | pen/animal_id) + (1 | weight_block),
+  data = fe_be_dep %>%
+    filter(variable_measured %in% "Demeanor score") %>%
+    mutate(day_of_trial = as.factor(day_of_trial)) %>%
+    droplevels()
+)
+
+datatable(ls_means_table(model_dem),
+          options = list(scrollY = 400, scrollX = TRUE, paging = FALSE,
+                         dom = "t", ordering = FALSE),
+          rownames = FALSE, style = "bootstrap5") %>%
+  formatStyle(columns = names(ls_means_table(model_dem)), textAlign = "center")
+
+addWorksheet(wb_results, "ls_mean_dem")
+writeData(wb_results, sheet = "ls_mean_dem",
+          ls_means_table(model_dem), colNames = TRUE, rowNames = FALSE)
+```
+
+<br>
+
+## LS means: Abdominal score
+
+```{r lsmeans-abdominal, message=FALSE, warning=FALSE, eval=TRUE}
+model_abd <- lmer(
+  as.numeric(variable_value) ~ treatment_full_name * day_of_trial +
+    (1 | pen/animal_id) + (1 | weight_block),
+  data = fe_be_dep %>%
+    filter(variable_measured %in% "Abdominal score") %>%
+    mutate(day_of_trial = as.factor(day_of_trial)) %>%
+    droplevels()
+)
+
+datatable(ls_means_table(model_abd),
+          options = list(scrollY = 400, scrollX = TRUE, paging = FALSE,
+                         dom = "t", ordering = FALSE),
+          rownames = FALSE, style = "bootstrap5") %>%
+  formatStyle(columns = names(ls_means_table(model_abd)), textAlign = "center")
+
+addWorksheet(wb_results, "ls_mean_abd_score")
+writeData(wb_results, sheet = "ls_mean_abd_score",
+          ls_means_table(model_abd), colNames = TRUE, rowNames = FALSE)
+```
+
+<br>
+
+## Longitudinal LS means over time
+
+### Repeated measures mixed-effects model with post-hoc comparisons
+
+A repeated measures mixed-effects analysis was performed to evaluate
+the effects of treatments and time on the clinical scores. Pairwise
+comparisons and compact letter displays (CLDs) are used to interpret
+differences between treatment groups **at each time point**. Points
+show LS means ± SE at each day. Different letters indicate significant
+differences (P < 0.05) based on Tukey-adjusted pairwise comparisons;
+† indicates a tendency (0.05 < P < 0.10).
+
+### Abdominal score
+
+```{r abd-longitudinal, message=FALSE, warning=FALSE, eval=TRUE, fig.width=18, fig.height=8}
+fe_be_dep_mean_sd <- fe_be_dep %>%
+  group_by(day_of_trial, treatment_full_name, variable_measured) %>%
+  summarise(count = n(),
+            mean = mean(as.numeric(variable_value), na.rm = TRUE),
+            sd  = sd(as.numeric(variable_value),  na.rm = TRUE),
+            .groups = "drop")
+
+emm_bc      <- emmeans(model_abd, ~ treatment_full_name | day_of_trial)
+pairwise_summary_bc <- summary(pairs(emm_bc))
+
+ls_means_bc <- emm_bc %>%
+  cld(Letters = letters, adjust = "tukey") %>%
+  rename(cld = ".group") %>%
+  mutate(cld = as.character(toupper(cld))) %>%
+  select(treatment_full_name, day_of_trial, emmean, SE, cld) %>%
+  mutate(emmean_round = round(emmean, 2))
+
+for (i in 1:nrow(pairwise_summary_bc)) {
+  if (pairwise_summary_bc$p.value[i] > 0.05 & pairwise_summary_bc$p.value[i] < 0.1) {
+    day <- pairwise_summary_bc$day_of_trial[i]
+    treatments <- strsplit(gsub(" - ", "|",
+                                as.character(pairwise_summary_bc$contrast[i])), "\\|")[[1]]
+    for (trt in treatments) {
+      idx <- which(ls_means_bc$treatment_full_name == trt & ls_means_bc$day_of_trial == day)
+      if (length(idx) > 0 && !grepl("\u2020", ls_means_bc$cld[idx]))
+        ls_means_bc$cld[idx] <- paste0(ls_means_bc$cld[idx], "\u2020")
+    }
+  }
+}
+ls_means_bc$day_numeric <- as.numeric(as.character(ls_means_bc$day_of_trial))
+
+ggplot(ls_means_bc, aes(x = day_numeric, y = emmean,
+                         color = treatment_full_name, fill = treatment_full_name,
+                         group = treatment_full_name)) +
+  geom_ribbon(aes(ymin = emmean - SE, ymax = emmean + SE), alpha = 0.2, color = NA) +
+  geom_line(linewidth = 1.2) +
+  geom_point(size = 3, shape = 21, color = "black") +
+  geom_text(aes(label = cld), vjust = -1, fontface = "bold", size = 4) +
+  scale_color_manual(values = plotting_cols, name = "Treatment") +
+  scale_fill_manual(values = plotting_cols, name = "Treatment") +
+  scale_x_continuous(breaks = unique(ls_means_bc$day_numeric)) +
+  labs(title = "Abdominal Scores Over Time (LS Means \u00b1 SE)",
+       subtitle = "Different letters: P < 0.05 | \u2020 tendency (0.05 < P < 0.1)",
+       x = "Day of Trial", y = "Abdominal Score (LS Mean \u00b1 SE)") +
+  theme_minimal() +
+  theme(plot.title = element_text(size = 16, face = "bold", hjust = 0.5),
+        plot.subtitle = element_text(size = 11, hjust = 0.5, color = "gray40"),
+        axis.text = element_text(size = 12),
+        axis.title = element_text(size = 14, face = "bold"),
+        legend.position = "bottom",
+        panel.grid.major = element_line(color = "gray90"),
+        panel.grid.minor = element_blank())
+```
+
+<br>
+
+### Fecal score
+
+```{r fecal-longitudinal, message=FALSE, warning=FALSE, eval=TRUE, fig.width=18, fig.height=8}
+emm_fs      <- emmeans(model_fecal, ~ treatment_full_name | day_of_trial)
+pairwise_summary_fs <- summary(pairs(emm_fs))
+
+ls_means_fs <- emm_fs %>%
+  cld(Letters = letters, adjust = "tukey") %>%
+  rename(cld = ".group") %>%
+  mutate(cld = as.character(toupper(cld))) %>%
+  select(treatment_full_name, day_of_trial, emmean, SE, cld) %>%
+  mutate(emmean_round = round(emmean, 2))
+
+for (i in 1:nrow(pairwise_summary_fs)) {
+  if (pairwise_summary_fs$p.value[i] > 0.05 & pairwise_summary_fs$p.value[i] < 0.1) {
+    day <- pairwise_summary_fs$day_of_trial[i]
+    treatments <- strsplit(gsub(" - ", "|",
+                                as.character(pairwise_summary_fs$contrast[i])), "\\|")[[1]]
+    for (trt in treatments) {
+      idx <- which(ls_means_fs$treatment_full_name == trt & ls_means_fs$day_of_trial == day)
+      if (length(idx) > 0 && !grepl("\u2020", ls_means_fs$cld[idx]))
+        ls_means_fs$cld[idx] <- paste0(ls_means_fs$cld[idx], "\u2020")
+    }
+  }
+}
+ls_means_fs$day_numeric <- as.numeric(as.character(ls_means_fs$day_of_trial))
+
+ggplot(ls_means_fs, aes(x = day_numeric, y = emmean,
+                         color = treatment_full_name, fill = treatment_full_name,
+                         group = treatment_full_name)) +
+  geom_ribbon(aes(ymin = emmean - SE, ymax = emmean + SE), alpha = 0.2, color = NA) +
+  geom_line(linewidth = 1.2) +
+  geom_point(size = 3, shape = 21, color = "black") +
+  geom_text(aes(label = cld), vjust = -1, fontface = "bold", size = 4) +
+  scale_color_manual(values = plotting_cols, name = "Treatment") +
+  scale_fill_manual(values = plotting_cols, name = "Treatment") +
+  scale_x_continuous(breaks = unique(ls_means_fs$day_numeric)) +
+  labs(title = "Fecal Scores Over Time (LS Means \u00b1 SE)",
+       subtitle = "Different letters: P < 0.05 | \u2020 tendency (0.05 < P < 0.1)",
+       x = "Day of Trial", y = "Fecal Score (LS Mean \u00b1 SE)") +
+  theme_minimal() +
+  theme(plot.title = element_text(size = 16, face = "bold", hjust = 0.5),
+        plot.subtitle = element_text(size = 11, hjust = 0.5, color = "gray40"),
+        axis.text = element_text(size = 12),
+        axis.title = element_text(size = 14, face = "bold"),
+        legend.position = "bottom",
+        panel.grid.major = element_line(color = "gray90"),
+        panel.grid.minor = element_blank())
+```
+
+<br>
+
+## Line graph: mean ± SD by trial day
+
+Mean and SD calculated from the raw (unadjusted) individual data.
+These plots provide a simple visual check of the raw treatment
+differences prior to any modelling.
+
+<br>
+
+```{r fe-mean-sd-line, message=FALSE, warning=FALSE, eval=TRUE, fig.width=15, fig.height=10}
+ggplot(fe_be_dep_mean_sd,
+       aes(x = day_of_trial, y = mean,
+           group = treatment_full_name,
+           color = treatment_full_name, fill = treatment_full_name)) +
+  geom_line(linewidth = 1) +
+  geom_point(aes(fill = treatment_full_name), color = "black", size = 3, shape = 21) +
+  geom_errorbar(aes(ymin = mean - sd, ymax = mean + sd), width = 0.5, linewidth = 0.8) +
+  facet_grid(variable_measured ~ treatment_full_name, scales = "free_y") +
+  labs(x = "Day of Trial", y = "Score: Mean \u00b1 SD", fill = "") +
+  scale_color_manual(values = plotting_cols) +
+  scale_fill_manual(values = plotting_cols) +
+  scale_x_continuous(breaks = seq(1, 35, 1)) +
+  theme(legend.position = "bottom", strip.text = element_text(size = 10),
+        axis.text.y = element_text(size = 10),
+        axis.text.x = element_text(angle = 90, size = 5),
+        axis.title = element_text(size = 12)) +
+  guides(color = "none")
+```
+
+<br>
+
+---
+
+# Fecal score (binary)
+
+Fecal scores were dichotomised: scores ≥ 2 were classified as
+"Diarrhea" and all lower scores as "No diarrhea". This binary
+transformation provides a clinically meaningful summary of diarrhoea
+prevalence across treatment groups and days. The summaries below are
+based on the raw data unless labelled as LS means.
+
+<br>
+
+## Bargraph: proportions
+
+```{r fecal-binary-bar, message=FALSE, warning=FALSE, eval=TRUE, fig.height=5, fig.width=14}
+fe_binary_prop <- fecal_score_binary %>%
+  mutate(variable_value = as.factor(variable_value)) %>%
+  group_by(day_of_trial, treatment_full_name, variable_value) %>%
+  summarise(count = n(), .groups = "drop") %>%
+  group_by(day_of_trial, treatment_full_name) %>%
+  mutate(proportion = count / sum(count))
+
+ggplot(fe_binary_prop,
+       aes(x = as.factor(day_of_trial), y = proportion, fill = variable_value)) +
+  geom_bar(stat = "identity", position = "stack", color = "black") +
+  facet_grid(~ treatment_full_name, scales = "free_y") +
+  labs(x = "Day of Trial", y = "Proportion", fill = "Score") +
+  scale_fill_manual(values = c("red", "blue")) +
+  theme(legend.position = "top", strip.text = element_text(size = 10),
+        axis.text.x = element_text(size = 10, angle = 90),
+        axis.text.y = element_text(size = 10),
+        axis.title = element_text(size = 12),
+        legend.title = element_text(face = "bold"))
+```
+
+<br>
+
+## Line graph: diarrhoea prevalence
+
+```{r fecal-binary-line, message=FALSE, warning=FALSE, eval=TRUE, fig.width=15, fig.height=6}
+fe_binary_mean_sd <- fecal_score_binary %>%
+  mutate(variable_value = case_when(
+    variable_value == "No diarrhea" ~ 0,
+    variable_value == "Diarrhea"  ~ 1
+  )) %>%
+  group_by(day_of_trial, treatment_full_name) %>%
+  summarise(count = n(),
+            mean = mean(as.numeric(variable_value), na.rm = TRUE),
+            sd  = sd(as.numeric(variable_value),  na.rm = TRUE),
+            .groups = "drop")
+
+ggplot(fe_binary_mean_sd,
+       aes(x = day_of_trial, y = mean,
+           group = treatment_full_name,
+           color = treatment_full_name, fill = treatment_full_name)) +
+  geom_line(linewidth = 1) +
+  geom_point(aes(fill = treatment_full_name), color = "black", size = 3, shape = 21) +
+  geom_errorbar(aes(ymin = mean - sd, ymax = mean + sd), width = 0.5, linewidth = 0.8) +
+  facet_grid(~ treatment_full_name, scales = "free_y") +
+  labs(x = "Day of Trial", y = "Diarrhoea proportion (Mean \u00b1 SD)", fill = "") +
+  scale_color_manual(values = plotting_cols) +
+  scale_fill_manual(values = plotting_cols) +
+  scale_x_continuous(breaks = seq(1, 35, 1)) +
+  theme(legend.position = "bottom", strip.text = element_text(size = 10),
+        axis.text.y = element_text(size = 10),
+        axis.text.x = element_text(angle = 90, size = 5),
+        axis.title = element_text(size = 12)) +
+  guides(color = "none")
+```
+
+<br>
+
+## LS means: Binary fecal score
+
+Binary fecal scores (0/1) were analysed with the same repeated-measures
+mixed model as the continuous scores. The LS mean here approximates the
+modelled diarrhoea prevalence in each treatment group at each day.
+
+<br>
+
+```{r fecal-binary-lsmeans, message=FALSE, warning=FALSE, eval=TRUE}
+model_binary <- lmer(
+  variable_value ~ treatment_full_name * day_of_trial +
+    (1 | pen/animal_id) + (1 | weight_block),
+  data = fecal_score_binary %>%
+    mutate(variable_value = ifelse(variable_value == "Diarrhea", 1, 0),
+           day_of_trial = as.factor(day_of_trial)) %>%
+    droplevels()
+)
+
+datatable_func(ls_means_table(model_binary))
+```
+
+<br>
+
+---
+
+# Individual body weight
+
+Individual pig body weights were recorded at each weighing event
+throughout the trial. These data form the basis for both the
+longitudinal body weight analysis and the individual-level ADG
+calculations described in subsequent sections.
+
+<br>
+
+## Summary statistics
+
+Calculated from the raw individual body weight data, prior to any
+model adjustment.
+
+<br>
+
+```{r ind-bw-load, message=FALSE, warning=FALSE, echo=FALSE, eval=TRUE}
+individual_bw <- body_weight %>%
+  rename(bw = variable_value) %>%
+  mutate(
+    bw = as.numeric(bw),
+    bw = case_when(
+      animal_id == "0671" & day_of_trial == 29 & bw == 0 ~ NA_real_,
+      animal_id == "0402" & day_of_trial == 29      ~ bw * 10,
+      TRUE                        ~ bw
+    )
+  ) %>%
+  filter(!is.na(bw))
+```
+
+## Summary statistics
+
+```{r ind-bw-desc, message=FALSE, warning=FALSE, echo=FALSE, eval=TRUE}
+df_ind_bw <- individual_bw %>%
+  group_by(treatment_full_name, day_of_trial) %>%
+  summarise(mean = round(mean(bw, na.rm = TRUE), 1),
+            sd  = round(sd(bw,  na.rm = TRUE), 1),
+            cov = round((sd / mean) * 100, 1)) %>%
+  pivot_longer(cols = c(mean, sd, cov), names_to = "metric", values_to = "value") %>%
+  pivot_wider(names_from = treatment_full_name, values_from = value) %>%
+  as.data.frame()
+
+datatable_func(df_ind_bw)
+```
+
+<br>
+
+---
+
+# Individual body weight — longitudinal mixed model
+
+Individual body weight was analysed using a longitudinal mixed-effects
+model with treatment, day of trial, and their interaction as fixed
+effects, baseline body weight as a covariate, and random effects for pig
+nested within pen, weight block, and room. This model accounts for the
+repeated measurements on each animal and the clustering of animals
+within pens and rooms.
+
+The Dunnett-adjusted contrasts at each day identify when the IVP
+treatments begin to diverge significantly from the positive control —
+providing insight into the timing of treatment effects rather than just
+the overall average difference.
+
+```{r ind-bw-analysis, echo=FALSE, message=FALSE, warning=FALSE}
+source("R/analysis_individual_bw.R")
+```
+
+<br>
+
+## Summary of body weight
+
+Raw descriptive statistics for individual body weight by treatment and
+day of trial. These values are calculated directly from the observed
+data and are presented prior to any model adjustment.
+
+```{r ind-bw-desc2, echo=FALSE, message=FALSE, warning=FALSE}
+datatable_func(bw_desc)
+```
+
+<br>
+
+## Mean body weight over time
+
+Mean body weight per pig by treatment group. Error bars show ±1 SD
+calculated from the raw data. The pattern illustrates the overall
+growth trajectory and the progressive separation between treatment
+groups following the F18 challenge.
+
+```{r ind-bw-mean-plot, echo=FALSE, message=FALSE, warning=FALSE, fig.height=6, fig.width=8}
+p_bw_summary
+```
+
+<br>
+
+## Individual pig body weight trajectories
+
+Each line represents a single pig. Plotting all individual trajectories
+reveals within-group variability and helps identify whether treatment
+differences are broadly distributed across animals or concentrated in a
+subset of individuals.
+
+```{r ind-bw-ind-plot, echo=FALSE, message=FALSE, warning=FALSE, fig.height=6, fig.width=8}
+p_bw_individual
+```
+
+<br>
+
+## LS means and treatment comparisons
+
+The table below shows the **model-based LS means** for individual body
+weight by treatment and day. The symbols are interpreted as follows:
+**A** = not different from the positive control, **B** = significantly
+different from the positive control (P < 0.05), and **†** = tendency
+versus the positive control (0.05 < P < 0.10).
+
+```{r ind-bw-lsmeans, echo=FALSE, message=FALSE, warning=FALSE}
+datatable(
+  bw_lsmeans_fmt,
+  options = list(scrollY = 400, scrollX = TRUE, paging = FALSE,
+                 dom = "t", ordering = FALSE),
+  rownames = FALSE, style = "bootstrap5"
+) %>%
+  formatStyle(columns = names(bw_lsmeans_fmt), textAlign = "center")
+```
+
+<br>
+
+The table below shows the formal **Dunnett-adjusted contrasts** versus
+F18-ETEC (PC). Rows are highlighted by significance class: red =
+significant (P < 0.05), yellow = tendency (0.05 < P < 0.10), white =
+not significant. The estimate and p-value columns are additionally
+bolded and colour-coded to make the key results immediately visible.
+
+```{r ind-bw-dunnett, echo=FALSE, message=FALSE, warning=FALSE}
+bw_dunnett_display_rich <- as.data.frame(bw_dunnett) %>%
+  mutate(
+    treatment = stringr::str_split_fixed(contrast, " - ", 2)[, 1],
+    treatment = stringr::str_remove_all(treatment, "^\\(|\\)$"),
+    treatment = stringr::str_squish(treatment),
+    sig_class = case_when(
+      p.value < 0.05 ~ "Significant (p<0.05)",
+      p.value < 0.10 ~ "Tendency (p<0.10)",
+      TRUE           ~ "NS"
+    ),
+    sig_symbol = case_when(
+      p.value < 0.05 ~ "*",
+      p.value < 0.10 ~ "\u2020",
+      TRUE           ~ ""
+    ),
+    estimate_fmt = sprintf("%.3f %s", estimate, sig_symbol),
+    p_fmt        = ifelse(is.na(p.value), NA_character_,
+                          sprintf("%.3f", p.value))
+  ) %>%
+  select(day_num, treatment, estimate_fmt, SE, df, p_fmt, sig_class)
+
+DT::datatable(
+  bw_dunnett_display_rich,
+  options = list(scrollY = 400, scrollX = TRUE, paging = FALSE,
+                 dom = "t", ordering = FALSE),
+  rownames  = FALSE,
+  style     = "bootstrap5",
+  colnames  = c("Day", "Treatment", "Estimate", "SE", "df", "P-value",
+                "Significance")
+) %>%
+  DT::formatStyle(
+    columns = names(bw_dunnett_display_rich),
+    textAlign = "center"
+  ) %>%
+  DT::formatStyle(
+    "sig_class",
+    target          = "row",
+    backgroundColor = DT::styleEqual(
+      c("Significant (p<0.05)", "Tendency (p<0.10)", "NS"),
+      c("#f4cccc",              "#fff2cc",            "white")
+    )
+  ) %>%
+  DT::formatStyle(
+    c("estimate_fmt", "p_fmt"),
+    fontWeight      = DT::styleEqual(
+      c("Significant (p<0.05)", "Tendency (p<0.10)", "NS"),
+      c("bold",                 "bold",               "normal")
+    ),
+    color           = DT::styleEqual(
+      c("Significant (p<0.05)", "Tendency (p<0.10)", "NS"),
+      c("#990000",              "#9C6500",            "black")
+    ),
+    valueColumns    = "sig_class"
+  )
+```
+
+<br>
+
+```{r ind-bw-forest, echo=FALSE, message=FALSE, warning=FALSE, fig.height=6, fig.width=12}
+bw_dunnett_plot_df <- bw_dunnett |>
+  mutate(
+    treatment = str_split_fixed(contrast, " - ", 2)[, 1],
+    treatment = str_remove_all(treatment, "^\\(|\\)$"),
+    treatment = str_squish(treatment),
+    sig_label = case_when(
+      p.value < 0.001 ~ "***",
+      p.value < 0.01  ~ "**",
+      p.value < 0.05  ~ "*",
+      p.value < 0.10  ~ "\u2020",
+      TRUE        ~ ""
+    ),
+    sig_band = case_when(
+      p.value < 0.05 ~ "Significant",
+      p.value < 0.10 ~ "Tendency",
+      TRUE       ~ "NS"
+    ),
+    lower.CL = estimate - qt(0.975, df) * SE,
+    upper.CL = estimate + qt(0.975, df) * SE,
+    day_label = factor(paste0("Day ", day_num),
+                       levels = paste0("Day ", sort(unique(day_num))))
+  ) |>
+  filter(treatment %in% c("No Chall (NC)", "1BP (BP-L)", "2BP (BP-SL)"))
+
+ggplot(bw_dunnett_plot_df,
+       aes(x = estimate, y = fct_rev(day_label),
+           color = sig_band, fill = sig_band)) +
+  geom_vline(xintercept = 0, linetype = "dashed",
+             color = "grey40", linewidth = 0.8) +
+  geom_errorbarh(aes(xmin = lower.CL, xmax = upper.CL),
+                 height = 0.3, linewidth = 0.7) +
+  geom_point(size = 4, shape = 21, color = "black") +
+  geom_text(aes(label = sig_label, x = upper.CL),
+            hjust = -0.4, size = 4.5, fontface = "bold",
+            color = "black", show.legend = FALSE) +
+  scale_color_manual(values = c("Significant" = "#d73027",
+                                "Tendency" = "#f4a582",
+                                "NS" = "grey60"), name = "") +
+  scale_fill_manual(values  = c("Significant" = "#d73027",
+                                "Tendency" = "#f4a582",
+                                "NS" = "grey60"), name = "") +
+  facet_wrap(~ treatment, nrow = 1) +
+  labs(x = "Estimated difference vs F18-ETEC (PC) [kg]", y = NULL,
+       title = "Treatment vs positive control: individual body weight",
+       subtitle = "Points = estimated difference \u00b1 95% CI | * P<0.05 ** P<0.01 *** P<0.001 \u2020 P<0.10") +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "bottom",
+        plot.title = element_text(face = "bold"),
+        strip.text = element_text(face = "bold", size = 11),
+        panel.grid.major.y = element_blank(),
+        panel.grid.minor = element_blank())
+```
+
+Forest plot showing the estimated difference in body weight relative to
+F18-ETEC (PC) across trial days. Values above zero indicate heavier pigs
+than the positive control. The dashed line represents no difference.
+
+<br>
+
+## Final body weight
+
+The table below summarises the model-based LS means and Dunnett-adjusted
+contrasts for final individual body weight at the last day of trial.
+Significance markers reflect contrasts versus F18-ETEC (PC). Rows
+highlighted in red are significant (P < 0.05); yellow indicates a
+tendency (P < 0.10).
+
+```{r ind-bw-final, echo=FALSE, message=FALSE, warning=FALSE}
+bw_final_dunnett <- as.data.frame(
+  contrast(bw_final_ls, method = "trt.vs.ctrl",
+           ref = "F18-ETEC (PC)", adjust = "dunnett")
+)
+
+datatable(
+  bw_final_dunnett,
+  options = list(scrollX = TRUE, paging = FALSE, dom = "t", ordering = FALSE),
+  rownames = FALSE, style = "bootstrap5"
+) %>%
+  formatStyle(columns = names(bw_final_dunnett), textAlign = "center") %>%
+  formatStyle("p.value", target = "row",
+              backgroundColor = styleInterval(
+                c(0.05, 0.10), c("#ffd6d6", "#fff3cd", "white")
+              ))
+```
+
+<br>
+
+---
+
+# Individual ADG — dedicated analysis
+
+Individual-level average daily gain was analysed using a dedicated
+script that applies explicit removal exclusions and outlier flagging
+before modelling. Animals removed before or during a period are excluded
+from that period's ADG calculation, and extreme outliers (beyond 3 × IQR
+from the period distribution) are flagged and removed prior to model
+fitting.
+
+```{r ind-adg-analysis, echo=FALSE, message=FALSE, warning=FALSE}
+source("R/analysis_individual_adg.R")
+```
+
+<br>
+
+## Removal summary
+
+The table below shows the number of animals per treatment and period
+classified as completed, removed during the period, or removed before
+the period. Animals in the latter two categories are excluded from that
+period's ADG calculation to avoid bias from non-random removals in a
+challenge model.
+
+```{r ind-adg-removals, echo=FALSE, message=FALSE, warning=FALSE}
+datatable_func(removal_summary)
+```
+
+<br>
+
+## Flagged outliers
+
+Animals with ADG values beyond 3 × IQR from the period distribution are
+flagged as extreme outliers and excluded before model fitting. The table
+below lists any flagged animals; if no rows appear, no extreme outliers
+were detected.
+
+```{r ind-adg-outliers-table, echo=FALSE, message=FALSE, warning=FALSE}
+if (nrow(adg_flagged) > 0) {
+  datatable_func(adg_flagged)
+} else {
+  cat("No extreme outliers detected (3 × IQR rule).")
+}
+```
+
+<br>
+
+## Descriptive statistics
+
+Mean, SD, and CV of individual ADG by treatment and period, calculated
+after removal exclusions and outlier removal.
+
+```{r ind-adg-desc, echo=FALSE, message=FALSE, warning=FALSE}
+datatable_func(adg_desc)
+```
+
+<br>
+
+## LS means and Dunnett contrasts
+
+Model-based least-squares means for individual ADG by treatment and
+period. \* P < 0.05, † tendency (0.05 < P < 0.10). The mixed model
+included treatment and starting body weight as fixed effects, and pen
+nested within block plus room as random effects. Only animals that
+completed each period without a removal event are included.
+
+```{r ind-adg-lsmeans, echo=FALSE, message=FALSE, warning=FALSE}
+datatable(
+  adg_lsmeans_fmt,
+  options = list(scrollY = 400, scrollX = TRUE, paging = FALSE,
+                 dom = "t", ordering = FALSE),
+  rownames = FALSE, style = "bootstrap5"
+) %>%
+  formatStyle(columns = names(adg_lsmeans_fmt), textAlign = "center")
+```
+
+<br>
+
+## Forest plot: ADG treatment contrasts
+
+Each panel shows the estimated difference in ADG versus the F18-ETEC
+(PC) group across all trial periods. Points above zero indicate higher
+ADG than the positive control; points below zero indicate lower ADG.
+Error bars show the approximate 95% confidence interval. Colour coding
+indicates whether the contrast was significant (red), a tendency
+(salmon), or non-significant (grey).
+
+```{r ind-adg-forest, echo=FALSE, message=FALSE, warning=FALSE, fig.height=7, fig.width=10}
+p_adg_forest
+```
+
+<br>
+
+## Outlier plot
+
+Individual ADG values shown by treatment and period. Grey points are
+observations retained for analysis; coloured triangles are extreme
+outliers (beyond 3 × IQR) that were excluded, labelled by animal ID to
+facilitate data review.
+
+```{r ind-adg-outlier-plot, echo=FALSE, message=FALSE, warning=FALSE, fig.height=10, fig.width=14}
+p_adg_outliers
+```
+
+<br>
+
+## Cumulative removal plot
+
+Cumulative animal removals over time by treatment group and removal
+type (mortality, health removal, or cull). The step plot allows a
+quick visual check of whether removal rates or timing differed between
+treatment groups.
+
+```{r ind-adg-removal-plot, echo=FALSE, message=FALSE, warning=FALSE, fig.height=5, fig.width=8}
+p_removals
+```
+
+<br>
+
+---
+
+# Pen-level CV analyses
+
+The coefficient of variation (CV%) of individual body weights within
+each pen is used as a measure of uniformity. A higher CV indicates
+greater within-pen weight variability. The mixed model adjusts for
+the number of animals per pen as a covariate. No statistical
+differences were expected between treatments on any day of trial in this
+metric; any significant results would suggest unequal variability as a
+consequence of the challenge or treatment response.
+
+<br>
+
+```{r cv-analysis, message=FALSE, warning=FALSE, echo=FALSE, eval=TRUE}
+pen_bw_cv <- individual_bw %>%
+  group_by(pen, day_of_trial) %>%
+  reframe(n_animal = n(),
+          mean_bw = mean(bw, na.rm = TRUE),
+          sd_bw  = sd(bw,  na.rm = TRUE),
+          cv_bw  = (sd_bw / mean_bw) * 100) %>%
+  left_join(select(per_dat, treatment_full_name, weight_block, room, pen),
+            by = "pen") %>%
+  distinct() %>%
+  as.data.frame()
+
+addWorksheet(wb_raw_data, "pen_cv")
+writeData(wb_raw_data, sheet = 6, pen_bw_cv, colNames = TRUE)
+
+pen_bw_cv_wide <- pen_bw_cv %>%
+  pivot_wider(names_from = "day_of_trial", values_from = "cv_bw") %>%
+  rename_with(~ paste0("day_", .), .cols = matches("^\\d+$")) %>%
+  filter(!is.na(treatment_full_name)) %>%
+  as.data.frame()
+
+formula_cv <- as.formula("Value ~ Treatment_ID + n_animal + (1|weight_block)")
+
+plot_dot_cv <- mapply(
+  dotplot_general,
+  data     = list(pen_bw_cv_wide),
+  gtitles    = paste("Day", sub("day_", "", grep("^day_", colnames(pen_bw_cv_wide), value = TRUE))),
+  y_lab_title  = list("Body weight CV%"),
+  t_labs    = list(levels(pen_bw_cv_wide$treatment_full_name)),
+  plot_cols   = list(brewer.pal(length(levels(pen_bw_cv_wide$treatment_full_name)), "Spectral")),
+  dot_size   = list(2),
+  cols_to_select = lapply(colnames(pen_bw_cv_wide)[8:13], function(col)
+    c("treatment_full_name", "weight_block", "room", "n_animal", "pen", col)),
+  tr_col    = list("treatment_full_name"),
+  y_var_col   = colnames(pen_bw_cv_wide)[8:13],
+  formula    = list(formula_cv),
+  SIMPLIFY   = FALSE
+)
+```
+
+```{r cv-plots, message=FALSE, warning=FALSE, echo=FALSE, eval=TRUE, fig.width=15, fig.height=7}
+ggarrange(
+  plot_dot_cv[[1]] + ts + theme(text = element_text(size = 20)),
+  plot_dot_cv[[2]] + ts + ylab(""),
+  plot_dot_cv[[3]] + ts + ylab(""),
+  plot_dot_cv[[4]] + ts + theme(text = element_text(size = 20)),
+  plot_dot_cv[[5]] + ts + ylab(""),
+  plot_dot_cv[[6]] + ts + ylab(""),
+  ncol = 3, nrow = 2, common.legend = TRUE, legend = "bottom"
+)
+```
+
+```{r cv-lsmeans, message=FALSE, warning=FALSE, echo=FALSE, eval=TRUE}
+res_list_cv <- mapply(
+  ls_mean_tab_glht_general,
+  data     = list(pen_bw_cv_wide),
+  y_var_col   = colnames(pen_bw_cv_wide)[8:13],
+  tr_col    = list("treatment_full_name"),
+  formula    = list(formula_cv),
+  cols_to_select = lapply(colnames(pen_bw_cv_wide)[8:13], function(col)
+    c("treatment_full_name", "weight_block", "room", "n_animal", "pen", col)),
+  t_labs    = list(levels(pen_bw_cv_wide$treatment_full_name)),
+  SIMPLIFY   = FALSE
+)
+
+res_day_cv <- ls_mean_sum_tab_general(
+  vars      = colnames(pen_bw_cv_wide)[8:13],
+  t_labs     = levels(pen_bw_cv_wide$treatment_full_name),
+  row_labs    = paste("BW CV %:", paste("Day",
+                    sub("day_", "", grep("^day_", colnames(pen_bw_cv_wide), value = TRUE)))),
+  round_levs   = rep(1, 6),
+  cont_p_val_col = "p_value",
+  ff_p_val_cols = c("p_value_Treatment_ID", "p_value_n_animal"),
+  ff_col_names  = c("Treatment", "N animal"),
+  res_list    = res_list_cv
+)
+
+addWorksheet(wb_results, "ls_mean_cv")
+writeData(wb_results, sheet = "ls_mean_cv", res_day_cv, colNames = TRUE, rowNames = TRUE)
+
+df_cv <- cbind(rownames(res_day_cv), res_day_cv)
+colnames(df_cv)[1] <- "Period"
+datatable_func(df_cv)
+```
+
+<br>
+
+---
+
+# Mortality
+
+```{r mortality, message=FALSE, warning=FALSE, echo=FALSE, eval=TRUE}
+mort_base <- feed_bw %>%
+  filter(day_of_trial == 0) %>%
+  distinct(treatment_full_name, pen, n_animal) %>%
+  group_by(treatment_full_name) %>%
+  summarise(total_start_N = sum(n_animal, na.rm = TRUE), .groups = "drop")
+
+animal_removals_mort <- animal_removals %>%
+  filter(mortality_cull_removal %in% c("mortality", "health_removal")) %>%
+  mutate(trial_period_label = case_when(
+    day_of_trial >= 0 & day_of_trial <= 8  ~ "Day 0-8",
+    day_of_trial > 8  & day_of_trial <= 15 ~ "Day 8-15",
+    day_of_trial > 15 & day_of_trial <= 22 ~ "Day 15-22",
+    day_of_trial > 22 & day_of_trial <= 29 ~ "Day 22-29",
+    day_of_trial > 29 & day_of_trial <= 36 ~ "Day 29-36",
+    TRUE ~ NA_character_
+  )) %>%
+  filter(!is.na(trial_period_label))
+
+mort_df_weekly <- animal_removals_mort %>%
+  count(treatment_full_name, trial_period_label, name = "mortality_count") %>%
+  left_join(mort_base, by = "treatment_full_name") %>%
+  mutate(
+    per_mortality   = mortality_count / total_start_N * 100,
+    trial_period_label = factor(trial_period_label,
+                                levels = c("Day 0-8", "Day 8-15",
+                                           "Day 15-22", "Day 22-29", "Day 29-36"))
+  )
+
+mort_df_overall <- animal_removals_mort %>%
+  count(treatment_full_name, name = "mortality_count") %>%
+  left_join(mort_base, by = "treatment_full_name") %>%
+  mutate(per_mortality = mortality_count / total_start_N * 100,
+         trial_period_label = "Day 0-36 (Overall)")
+
+mortality_cols <- setNames(
+  RColorBrewer::brewer.pal(nlevels(mort_df_weekly$trial_period_label), "Set2"),
+  levels(mort_df_weekly$trial_period_label)
+)
+```
+
+```{r mort-weekly-plot, message=FALSE, warning=FALSE, echo=FALSE, eval=TRUE, fig.height=5, fig.width=6}
+ggplot(mort_df_weekly,
+       aes(x = treatment_full_name, y = mortality_count, fill = trial_period_label)) +
+  geom_col(width = 0.7, color = "white", linewidth = 0.3) +
+  geom_text(aes(label = ifelse(mortality_count == 0, "",
+                               paste0(mortality_count, " (",
+                                      round(per_mortality, 1), "%)"))),
+            position = position_stack(vjust = 0.5),
+            color = "white", size = 3.5, fontface = "bold") +
+  scale_fill_manual(values = mortality_cols) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.1))) +
+  labs(title = "Mortality by Treatment and Trial Period",
+       subtitle = "Absolute counts with percentage of placed animals",
+       y = "Number of Mortalities", x = "", fill = "Trial period") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1),
+        legend.position = "bottom")
+```
+
+```{r mort-overall-plot, message=FALSE, warning=FALSE, echo=FALSE, eval=TRUE}
+ggplot(mort_df_overall,
+       aes(x = treatment_full_name, y = mortality_count,
+           fill = trial_period_label)) +
+  geom_col(width = 0.7, color = "white", linewidth = 0.3) +
+  geom_text(aes(label = ifelse(mortality_count == 0, "",
+                               paste0(mortality_count, " (",
+                                      round(per_mortality, 1), "%)"))),
+            position = position_stack(vjust = 0.5),
+            color = "white", size = 3.5, fontface = "bold") +
+  labs(title = "Mortality by Treatment — Overall (Day 0-36)",
+       subtitle = "Absolute counts with percentage of placed animals",
+       y = "Number of Mortalities", x = "", fill = "") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1),
+        legend.position = "none")
+```
+
+```{r mort-table, message=FALSE, warning=FALSE, echo=FALSE, eval=TRUE}
+mort_sum <- mort_df_weekly %>%
+  mutate(mortality = paste0(mortality_count, " (", round(per_mortality, 1), "%)")) %>%
+  select(treatment_full_name, trial_period_label, mortality) %>%
+  pivot_wider(names_from = treatment_full_name, values_from = mortality) %>%
+  arrange(trial_period_label)
+
+datatable_func(mort_sum)
+
+addWorksheet(wb_raw_data, "mortality_sum")
+writeData(wb_raw_data, sheet = 7, mort_sum, colNames = TRUE)
+```
+
+<br>
+
+---
+
+# Additional analysis: challenged-only sensitivity analysis
+
+To confirm primary results are not driven by the unchallenged negative
+control in the model, a sensitivity analysis was performed using only
+the three challenged groups. The model structure is identical to the
+primary analysis.
+
+```{r sens-analysis, echo=FALSE, message=FALSE}
+challenged_levels <- c("F18-ETEC (PC)", "1BP (BP-L)", "2BP (BP-SL)")
+base_palette    <- if (exists("plotting_cols")) plotting_cols else ploting_cols
+challenge_palette <- base_palette[challenged_levels]
+
+per_dat_wide_chall <- per_dat_wide %>%
+  filter(treatment_full_name %in% challenged_levels) %>%
+  mutate(treatment_full_name = factor(treatment_full_name, levels = challenged_levels),
+         room = as.factor(room), weight_block = as.factor(weight_block))
+
+per_dat_long_chall <- per_dat_long %>%
+  filter(treatment_full_name %in% challenged_levels) %>%
+  mutate(treatment_full_name = factor(treatment_full_name, levels = challenged_levels))
+
+per_dat_wide_chall_no_out <- as.data.frame(
+  find_and_replace_outliers(
+    per_dat_wide_chall,
+    grep("^(fi|bwg|fcr|gf|adfi|adg)_", names(per_dat_wide_chall), value = TRUE)
+  )
+)
+
+metric_cols_chall <- grep("^(fi|bwg|fcr|gf|adfi|adg)_",
+                          names(per_dat_wide_chall), value = TRUE)
+
+formula_chall <- as.formula(
+  "Value ~ Treatment_ID + start_weight + (1|weight_block) + (1|room)"
+)
+
+show_four_chall <- function(period, plot_list) {
+  selected_names <- c(paste0("adfi_", period), paste0("adg_",  period),
+                      paste0("fcr_",  period), paste0("gf_",   period))
+  selected_idx <- match(selected_names, names(plot_list))
+  arrange_plots(plot_list, selected_idx, ts, n_col_num = 4, n_row_num = 1)
+}
+
+plot_dot_chall <- mapply(
+  dotplot_general,
+  data     = list(per_dat_wide_chall),
+  gtitles    = sapply(metric_cols_chall, get_plot_title),
+  y_lab_title  = sapply(metric_cols_chall, get_y_lab),
+  t_labs    = list(challenged_levels),
+  plot_cols   = list(challenge_palette),
+  dot_size   = list(2.5),
+  cols_to_select = lapply(metric_cols_chall, function(col)
+    c("treatment_full_name", "weight_block", "room", "start_weight", col)),
+  tr_col    = list("treatment_full_name"),
+  y_var_col   = metric_cols_chall,
+  formula    = list(formula_chall),
+  SIMPLIFY   = FALSE
+)
+
+plot_dot_chall_no_out <- mapply(
+  dotplot_general,
+  data     = list(per_dat_wide_chall_no_out),
+  gtitles    = sapply(metric_cols_chall, get_plot_title),
+  y_lab_title  = sapply(metric_cols_chall, get_y_lab),
+  t_labs    = list(challenged_levels),
+  plot_cols   = list(challenge_palette),
+  dot_size   = list(2.5),
+  cols_to_select = lapply(metric_cols_chall, function(col)
+    c("treatment_full_name", "weight_block", "room", "start_weight", col)),
+  tr_col    = list("treatment_full_name"),
+  y_var_col   = metric_cols_chall,
+  formula    = list(formula_chall),
+  SIMPLIFY   = FALSE
+)
+
+names(plot_dot_chall)    <- metric_cols_chall
+names(plot_dot_chall_no_out) <- metric_cols_chall
+```
+
+### Performance plots — challenged groups only
+
+```{r sens-plots, echo=FALSE, message=FALSE, fig.width=16, fig.height=5}
+show_four_chall("0_36", plot_dot_chall)
+show_four_chall("0_36", plot_dot_chall_no_out)
+
+show_four_chall("8_36", plot_dot_chall)
+show_four_chall("8_36", plot_dot_chall_no_out)
+```
+
+### LS means — challenged groups only
+
+```{r sens-lsmeans, echo=FALSE, message=FALSE}
+res_list_per_chall <- mapply(
+  ls_mean_tab_glht_general,
+  data     = list(per_dat_wide_chall_no_out),
+  y_var_col   = metric_cols_chall,
+  tr_col    = list("treatment_full_name"),
+  formula    = list(formula_chall),
+  cols_to_select = lapply(metric_cols_chall, function(col)
+    c("treatment_full_name", "weight_block", "room", "start_weight", col)),
+  t_labs    = list(challenged_levels),
+  SIMPLIFY   = FALSE
+)
+
+res_ov_per_periods_chall <- ls_mean_sum_tab_general(
+  vars      = metric_cols_chall,
+  t_labs     = challenged_levels,
+  row_labs    = paste0(
+    rep(levels(per_dat_long_chall$trial_period_label),
+        each = length(metric_map)),
+    ": ",
+    rep(unname(metric_map),
+        times = length(levels(per_dat_long_chall$trial_period_label)))
+  ),
+  round_levs   = rep(c(1, 1, 3, 3, 1, 1),
+                     times = length(levels(per_dat_long_chall$trial_period_label))),
+  cont_p_val_col = "p_value",
+  ff_p_val_cols = c("p_value_Treatment_ID", "p_value_start_weight"),
+  ff_col_names  = c("Treatment", "Start weight"),
+  res_list    = res_list_per_chall
+)
+
+df_chall <- cbind(rownames(res_ov_per_periods_chall), res_ov_per_periods_chall)
+colnames(df_chall)[1] <- "Variable"
+
+datatable_func(df_chall)
+```
+
+<br>
+
+---
+
+# Save outputs
+
+```{r save-outputs, message=FALSE, warning=FALSE, echo=FALSE, eval=TRUE}
+out_dir <- "out/rmd_generated"
+dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+
+openxlsx::saveWorkbook(
+  wb_raw_data,
+  file   = file.path(out_dir, "TRL000411_raw_data.xlsx"),
+  overwrite = TRUE
+)
+
+openxlsx::saveWorkbook(
+  wb_results,
+  file   = file.path(out_dir, "TRL000411_results.xlsx"),
+  overwrite = TRUE
+)
+
+save.image(file.path(out_dir, "TRL000411.RData"))
+
+message("Outputs saved to: ", out_dir)
+```

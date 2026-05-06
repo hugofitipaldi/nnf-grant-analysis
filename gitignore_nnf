@@ -1,0 +1,18 @@
+# Raw data - too large for GitHub, download from forskningsportal.dk
+raw_data/
+*.xlsx
+*.xls
+*.csv
+
+# R session files
+.Rhistory
+.RData
+.Rproj.user/
+*.Rproj
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Shiny deployment
+rsconnect/

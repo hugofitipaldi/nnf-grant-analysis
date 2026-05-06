@@ -1,9 +1,13 @@
 {
     "sortOrder": [
         {
+            "columnIndex": 4,
+            "ascending": false
+        },
+        {
             "columnIndex": 2,
             "ascending": true
         }
     ],
-    "path": "~/Documents/Projects/nnf-grant-analysis/outputs"
+    "path": "~/Documents/Projects/nnf-grant-analysis/app_data"
 }
