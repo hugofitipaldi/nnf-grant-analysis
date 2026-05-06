@@ -1,11 +1,11 @@
 {
     "id": "297DAF14",
-    "path": null,
-    "project_path": null,
+    "path": "~/Documents/Projects/nnf-grant-analysis/R/dataprep.R",
+    "project_path": "R/dataprep.R",
     "type": "r_source",
     "hash": "482702880",
     "contents": "",
-    "dirty": true,
+    "dirty": false,
     "created": 1778047483316.0,
     "source_on_save": false,
     "relative_order": 5,
@@ -17,11 +17,11 @@
         "scrollLine": "332"
     },
     "folds": "",
-    "lastKnownWriteTime": 0,
-    "encoding": "",
+    "lastKnownWriteTime": 1778047950,
+    "encoding": "UTF-8",
     "collab_server": "",
     "source_window": "",
-    "last_content_update": 1778047554328,
+    "last_content_update": 1778047950269,
     "read_only": false,
     "read_only_alternatives": []
 }
