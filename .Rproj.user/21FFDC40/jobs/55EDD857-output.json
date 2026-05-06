@@ -1,0 +1,8 @@
+[1,"Installing 'qrcode' ...\n"]
+[2,"trying URL 'https://cran.rstudio.com/bin/macosx/big-sur-x86_64/contrib/4.4/qrcode_0.3.0.tgz'\n"]
+[2,"Content type 'application/x-gzip' length 148020 bytes (144 KB)\n================================"]
+[2,"======"]
+[2,"============\ndownloaded 144 KB\n\n"]
+[1,"The downloaded binary packages are in\n"]
+[1,"\t/var/folders/11/vzgg30j959z0l31j3tfv29fc0000gp/T//Rtmpt5je39/downloaded_packages\n"]
+[2,"\n\n✔ Package 'qrcode' successfully installed.\n"]

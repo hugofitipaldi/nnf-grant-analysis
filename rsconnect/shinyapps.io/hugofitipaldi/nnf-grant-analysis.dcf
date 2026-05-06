@@ -1,0 +1,13 @@
+name: nnf-grant-analysis
+title: nnf-grant-analysis
+username: hugofitipaldi
+account: hugofitipaldi
+server: shinyapps.io
+hostUrl: https://api.shinyapps.io/v1
+appId: 17306371
+bundleId: 11955702
+url: https://hugofitipaldi.shinyapps.io/nnf-grant-analysis/
+version: 1
+asMultiple: FALSE
+asStatic: FALSE
+ignoredFiles: LICENSE|R/dataprep.R|R/sandbox.R|README.html|README.md|outputs
